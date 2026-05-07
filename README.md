@@ -245,7 +245,7 @@ PORT=3001
 Start the backend server:
 
 ```bash
-npm run dev
+npm run dev OR node server.js
 ```
 
 You should see:
