@@ -111,6 +111,17 @@ export default function App() {
         prev.map(m => m.id === id ? { ...m, text, editedAt, hasEditHistory } : m)
       )
     );
+
+    socket.on('message:reaction:update', ({ messageId, reactions }) => {
+  setMessages(prev =>
+    prev.map(m =>
+      String(m.id) === String(messageId)
+        ? { ...m, reactions }
+        : m
+    )
+  );
+});
+
     socket.on('message:pinned', ({ id, pinnedBy }) => {
       setMessages(prev => prev.map(m => m.id === id ? { ...m, pinned: true } : m));
       setNotifications(prev => [...prev, `📌 Message pinned by ${pinnedBy}`]);

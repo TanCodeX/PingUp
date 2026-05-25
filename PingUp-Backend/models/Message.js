@@ -14,6 +14,12 @@ const messageSchema = new mongoose.Schema({
     editedAt:     { type: Date, default: Date.now },
     editedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   }],
+  reactions: [
+  {
+    emoji: { type: String },
+    users: [{ type: String }]
+  }
+],
 }, { timestamps: true });
 
 module.exports = mongoose.model('Message', messageSchema);

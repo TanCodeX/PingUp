@@ -887,6 +887,58 @@ io.on('connection', async (socket) => {
     bc.emit('message:deleted', { id: messageId });
   }, 'Failed to delete message.'));
 
+  // ── Emoji Reactions ───────────────────────────────────────────
+socket.on('message:reaction', safeSocketHandler(socket, 'message:reaction', async ({ messageId, emoji }) => {
+
+  const message = await Message.findById(messageId);
+
+  if (!message)
+    return socket.emit('error:general', 'Message not found.');
+
+  let reaction = message.reactions.find(r => r.emoji === emoji);
+
+  if (!reaction) {
+    message.reactions.push({
+      emoji,
+      users: [socket.user.username]
+    });
+  } else {
+
+    const alreadyReacted = reaction.users.includes(socket.user.username);
+
+    if (alreadyReacted) {
+
+      reaction.users = reaction.users.filter(
+        user => user !== socket.user.username
+      );
+
+      // remove empty emoji group
+      if (reaction.users.length === 0) {
+        message.reactions = message.reactions.filter(
+          r => r.emoji !== emoji
+        );
+      }
+
+    } else {
+      reaction.users.push(socket.user.username);
+    }
+  }
+
+  await message.save();
+
+  const updatedMessage = await Message.findById(messageId);
+
+  const room = await Room.findOne({ name: message.roomName });
+
+if (room) {
+  io.to(room._id.toString()).emit('message:reaction:update', {
+    messageId,
+    reactions: updatedMessage.reactions,
+  });
+}
+
+}), 'Failed to react to message.');
+
   // ── Edit Message ───────────────────────────────────────────────
   socket.on('message:edit', async ({ channelId, roomName: rName, messageId, newText }) => {
     const trimmed = newText?.trim();
