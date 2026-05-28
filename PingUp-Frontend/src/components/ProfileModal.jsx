@@ -7,10 +7,10 @@ export default function ProfileModal({ user, onClose, setCurrentUser }) {
   const [tab, setTab] = useState('security');
   const [editing, setEditing] = useState(null); // 'displayName' | 'username' | 'email' | 'phone'
   const [fields, setFields] = useState({
-    displayName: user.displayName,
+    displayName: user.displayName || user.username,
     username:    user.username,
-    email:       user.email,
-    phone:       '1234565862',
+    email:       user.email || 'No email provided',
+    phone:       user.phone || 'No phone provided',
   });
   const [tempVal, setTempVal] = useState('');
   const [revealed, setRevealed] = useState({ email: false, phone: false });
@@ -58,11 +58,13 @@ export default function ProfileModal({ user, onClose, setCurrentUser }) {
   }
 
   function maskEmail(email) {
+    if (!email || !email.includes('@')) return email;
     const [local, domain] = email.split('@');
     return '*'.repeat(Math.max(local.length, 8)) + '@' + domain;
   }
 
   function maskPhone(phone) {
+    if (!phone || phone === 'No phone provided') return phone;
     return '*'.repeat(Math.max(phone.length - 4, 6)) + phone.slice(-4);
   }
 
