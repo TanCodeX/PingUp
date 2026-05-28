@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 
 const { pubClient, subClient, redisClient, redisReady } = require('./config/redis');
 const { messageQueue } = require('./services/messageQueue');
@@ -13,7 +14,7 @@ const User = require('./models/User');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
 const DirectMessage = require('./models/DirectMessage');
-const { generateToken, socketAuthMiddleware, verifyToken } = require('./middleware/auth');
+const { generateToken, socketAuthMiddleware, verifyToken, generateRefreshToken } = require('./middleware/auth');
 const { ROLES, hasPermission } = require('./data/store'); // <-- IMPORTED WEIGHT SYSTEM
 
 const app = express();
@@ -153,9 +154,14 @@ app.post('/api/register', async (req, res) => {
             email: email?.trim() || '',
         });
 
-        const token = generateToken(user);
+        const accessToken = generateToken(user);
+        const refreshToken = generateRefreshToken(user);
+
+        user.refreshToken = refreshToken;
+
         res.status(201).json({
-            token,
+            accessToken,
+            refreshToken,
             user: user.toSafeObject(),
             roleMessage: isFirst
                 ? '👑 You are the ADMIN — full system control granted.'
@@ -178,11 +184,79 @@ app.post('/api/login', async (req, res) => {
             return res.status(403).json({ error: 'You have been banned.' });
 
         user.loginCount += 1;
+
+        const accessToken = generateToken(user);
+        const refreshToken = generateRefreshToken(user);
+        user.refreshToken = refreshToken;
+
         await user.save();
-        const token = generateToken(user);
-        res.json({ token, user: user.toSafeObject() });
+
+        res.json({
+            accessToken,
+            refreshToken,
+            user: user.toSafeObject()
+        });
+
     } catch (err) {
         res.status(500).json({ error: 'Server error.' });
+    }
+});
+
+// ─── Refresh Route ────────────────────────────────────────────────
+app.post('/api/refresh', async (req, res) => {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+        return res.status(401).json({
+            error: 'Refresh token required'
+        });
+    }
+
+    try {
+        const decoded = jwt.verify(
+            refreshToken,
+            process.env.REFRESH_SECRET
+        );
+
+        const user = await User.findById(decoded.id);
+
+        if (!user || user.refreshToken !== refreshToken) {
+            return res.status(403).json({
+                error: 'Invalid refresh token'
+            });
+        }
+
+        const accessToken = generateToken(user);
+
+        res.json({ accessToken });
+
+    } catch (err) {
+        res.status(403).json({
+            error: 'Invalid or expired refresh token'
+        });
+    }
+});
+
+// ─── Logout ────────────────────────────────────────────────
+app.post('/api/logout', async (req, res) => {
+    try {
+        const { refreshToken } = req.body;
+
+        const user = await User.findOne({ refreshToken });
+
+        if (user) {
+            user.refreshToken = null;
+            await user.save();
+        }
+
+        res.json({
+            message: 'Logged out successfully'
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            error: 'Server error.'
+        });
     }
 });
 
@@ -674,21 +748,21 @@ io.on('connection', async (socket) => {
         socket.emit('room:history', {
             roomName,
             messages: history.reverse().map(m => ({
-    id: m._id.toString(),
-    userId: m.userId.toString(),
-    username: m.username,
-    role: m.role,
-    text: m.text,
-    timestamp: m.createdAt,
-    deleted: m.deleted,
-    pinned: pinnedIds.includes(m._id.toString()),
-    editedAt: m.editedAt,
-    editHistory: m.editHistory,
+                id: m._id.toString(),
+                userId: m.userId.toString(),
+                username: m.username,
+                role: m.role,
+                text: m.text,
+                timestamp: m.createdAt,
+                deleted: m.deleted,
+                pinned: pinnedIds.includes(m._id.toString()),
+                editedAt: m.editedAt,
+                editHistory: m.editHistory,
 
-    // THREAD FIX
-    parentMessageId: m.parentMessageId,
-    replyCount: m.replyCount || 0,
-})),
+                // THREAD FIX
+                parentMessageId: m.parentMessageId,
+                replyCount: m.replyCount || 0,
+            })),
         });
         io.to(roomName).emit('room:notification', {
             text: `${socket.user.username} joined #${roomName}`, type: 'join',
@@ -713,21 +787,21 @@ io.on('connection', async (socket) => {
         socket.emit('channel:history', {
             channelId,
             messages: history.reverse().map(m => ({
-    id: m._id.toString(),
-    userId: m.userId.toString(),
-    username: m.username,
-    role: m.role,
-    text: m.text,
-    timestamp: m.createdAt,
-    deleted: m.deleted,
-    pinned: pinnedIds.includes(m._id.toString()),
-    editedAt: m.editedAt,
-    editHistory: m.editHistory,
+                id: m._id.toString(),
+                userId: m.userId.toString(),
+                username: m.username,
+                role: m.role,
+                text: m.text,
+                timestamp: m.createdAt,
+                deleted: m.deleted,
+                pinned: pinnedIds.includes(m._id.toString()),
+                editedAt: m.editedAt,
+                editHistory: m.editHistory,
 
-    // THREAD FIX
-    parentMessageId: m.parentMessageId,
-    replyCount: m.replyCount || 0,
-})),
+                // THREAD FIX
+                parentMessageId: m.parentMessageId,
+                replyCount: m.replyCount || 0,
+            })),
             roomSettings: roomToChannel(room),
         });
     }, 'Failed to join channel.'));
@@ -767,7 +841,7 @@ io.on('connection', async (socket) => {
                     return socket.emit('error:permission', 'You cannot send messages.');
 
                 const msgId = new mongoose.Types.ObjectId();
-                
+
                 await messageQueue.add('send-message', {
                     _id: msgId,
                     roomName: resolvedRoom,
@@ -976,39 +1050,39 @@ io.on('connection', async (socket) => {
     });
 
     socket.on(
-  'thread:get',
-  safeSocketHandler(
-    socket,
-    'thread:get',
-    async ({ parentMessageId }) => {
+        'thread:get',
+        safeSocketHandler(
+            socket,
+            'thread:get',
+            async ({ parentMessageId }) => {
 
-      if (!parentMessageId) return;
+                if (!parentMessageId) return;
 
-      const replies = await Message.find({
-        parentMessageId,
-        deleted: false,
-      })
-        .sort({ createdAt: 1 })
-        .lean();
+                const replies = await Message.find({
+                    parentMessageId,
+                    deleted: false,
+                })
+                    .sort({ createdAt: 1 })
+                    .lean();
 
-      socket.emit('thread:history', {
-        parentMessageId,
-        replies: replies.map((m) => ({
-          id: m._id.toString(),
-          userId: m.userId.toString(),
-          username: m.username,
-          role: m.role,
-          text: m.text,
-          timestamp: m.createdAt,
-          deleted: m.deleted,
-          editedAt: m.editedAt,
-          replyCount: m.replyCount,
-          parentMessageId: m.parentMessageId,
-        })),
-      });
-    }
-  )
-);
+                socket.emit('thread:history', {
+                    parentMessageId,
+                    replies: replies.map((m) => ({
+                        id: m._id.toString(),
+                        userId: m.userId.toString(),
+                        username: m.username,
+                        role: m.role,
+                        text: m.text,
+                        timestamp: m.createdAt,
+                        deleted: m.deleted,
+                        editedAt: m.editedAt,
+                        replyCount: m.replyCount,
+                        parentMessageId: m.parentMessageId,
+                    })),
+                });
+            }
+        )
+    );
 
     // ── Category CRUD ──────────────────────────────────────────────
     socket.on('category:create', safeSocketHandler(socket, 'category:create', async ({ name }) => {
