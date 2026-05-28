@@ -18,6 +18,15 @@ function generateToken(user) {
   );
 }
 
+// added refresh token generator
+function generateRefreshToken(user) {
+  return jwt.sign(
+    { id: user._id.toString() },
+    process.env.REFRESH_SECRET,
+    { expiresIn: '7d' }
+  );
+}
+
 function verifyToken(token) {
   try { return jwt.verify(token, JWT_SECRET); }
   catch { return null; }
@@ -51,6 +60,7 @@ module.exports = {
   requireRole,
   ROLES,
   generateToken,
+  generateRefreshToken,
   verifyToken,
   socketAuthMiddleware
 };
