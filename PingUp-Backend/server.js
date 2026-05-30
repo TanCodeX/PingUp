@@ -918,6 +918,16 @@ io.on('connection', async (socket) => {
     socket.on('settings:update', safeSocketHandler(socket, 'settings:update', async ({ key, value }) => {
         if (socket.user.role !== 'owner')
             return socket.emit('error:permission', 'Owner only.');
+
+        // Validate allowed keys
+        const ALLOWED_KEYS = ['allowUserChannelCreation'];
+        if (!ALLOWED_KEYS.includes(key))
+            return socket.emit('error:general', `Invalid settings key: ${key}`);
+
+        // Enforce boolean value
+        if (typeof value !== 'boolean')
+            return socket.emit('error:general', 'Settings value must be a boolean.');
+
         await ServerSettings.findOneAndUpdate(
             { key },
             { value },

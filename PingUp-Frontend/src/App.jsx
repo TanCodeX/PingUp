@@ -63,6 +63,7 @@ const [threadReplies, setThreadReplies] = useState([]);
     setShowProfile(false);
     setShowFriends(false);
     setShowAdmin(false);
+    setAllowUserChannelCreation(false);
     setAuthPage('login');
   }, []);
 
