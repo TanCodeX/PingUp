@@ -86,8 +86,12 @@ async function broadcastStructure() {
 
 // ─── Server Settings helpers ──────────────────────────────────────
 async function getServerSetting(key, defaultValue) {
-    const setting = await ServerSettings.findOne({ key });
-    return setting ? setting.value : defaultValue;
+    try {
+        const setting = await ServerSettings.findOne({ key });
+        return setting ? setting.value === true : defaultValue;
+    } catch {
+        return defaultValue;
+    }
 }
 
 async function broadcastSettings() {
@@ -915,7 +919,17 @@ io.on('connection', async (socket) => {
         socket.emit('settings:update', { allowUserChannelCreation });
     }, 'Failed to get settings.'));
 
-    socket.on('settings:update', safeSocketHandler(socket, 'settings:update', async ({ key, value }) => {
+    socket.on('settings:update', safeSocketHandler(socket, 'settings:update', async (payload) => {
+        // Validate payload is a non-null object
+        if (!payload || typeof payload !== 'object')
+            return socket.emit('error:general', 'Invalid settings payload.');
+
+        const { key, value } = payload;
+
+        // Validate key exists
+        if (!key)
+            return socket.emit('error:general', 'Settings key is required.');
+
         if (socket.user.role !== 'owner')
             return socket.emit('error:permission', 'Owner only.');
 
