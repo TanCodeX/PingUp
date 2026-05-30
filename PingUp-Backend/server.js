@@ -662,21 +662,21 @@ io.on('connection', async (socket) => {
         socket.emit('room:history', {
             roomName,
             messages: history.reverse().map(m => ({
-    id: m._id.toString(),
-    userId: m.userId.toString(),
-    username: m.username,
-    role: m.role,
-    text: m.text,
-    timestamp: m.createdAt,
-    deleted: m.deleted,
-    pinned: pinnedIds.includes(m._id.toString()),
-    editedAt: m.editedAt,
-    editHistory: m.editHistory,
+                id: m._id.toString(),
+                userId: m.userId.toString(),
+                username: m.username,
+                role: m.role,
+                text: m.text,
+                timestamp: m.createdAt,
+                deleted: m.deleted,
+                pinned: pinnedIds.includes(m._id.toString()),
+                editedAt: m.editedAt,
+                editHistory: m.editHistory,
 
-    // THREAD FIX
-    parentMessageId: m.parentMessageId,
-    replyCount: m.replyCount || 0,
-})),
+                // THREAD FIX
+                parentMessageId: m.parentMessageId,
+                replyCount: m.replyCount || 0,
+            })),
         });
         io.to(roomName).emit('room:notification', {
             text: `${socket.user.username} joined #${roomName}`, type: 'join',
@@ -701,21 +701,21 @@ io.on('connection', async (socket) => {
         socket.emit('channel:history', {
             channelId,
             messages: history.reverse().map(m => ({
-    id: m._id.toString(),
-    userId: m.userId.toString(),
-    username: m.username,
-    role: m.role,
-    text: m.text,
-    timestamp: m.createdAt,
-    deleted: m.deleted,
-    pinned: pinnedIds.includes(m._id.toString()),
-    editedAt: m.editedAt,
-    editHistory: m.editHistory,
+                id: m._id.toString(),
+                userId: m.userId.toString(),
+                username: m.username,
+                role: m.role,
+                text: m.text,
+                timestamp: m.createdAt,
+                deleted: m.deleted,
+                pinned: pinnedIds.includes(m._id.toString()),
+                editedAt: m.editedAt,
+                editHistory: m.editHistory,
 
-    // THREAD FIX
-    parentMessageId: m.parentMessageId,
-    replyCount: m.replyCount || 0,
-})),
+                // THREAD FIX
+                parentMessageId: m.parentMessageId,
+                replyCount: m.replyCount || 0,
+            })),
             roomSettings: roomToChannel(room),
         });
     }, 'Failed to join channel.'));
@@ -970,110 +970,120 @@ io.on('connection', async (socket) => {
     });
 
     socket.on(
-  'thread:get',
-  safeSocketHandler(
-    socket,
-    'thread:get',
-    async ({ parentMessageId }) => {
+        'thread:get',
+        safeSocketHandler(
+            socket,
+            'thread:get',
+            async ({ parentMessageId }) => {
 
-      if (!parentMessageId) return;
+                if (!parentMessageId) return;
 
-      const replies = await Message.find({
-        parentMessageId,
-        deleted: false,
-      })
-        .sort({ createdAt: 1 })
-        .lean();
+                const replies = await Message.find({
+                    parentMessageId,
+                    deleted: false,
+                })
+                    .sort({ createdAt: 1 })
+                    .lean();
 
-      socket.emit('thread:history', {
-        parentMessageId,
-        replies: replies.map((m) => ({
-          id: m._id.toString(),
-          userId: m.userId.toString(),
-          username: m.username,
-          role: m.role,
-          text: m.text,
-          timestamp: m.createdAt,
-          deleted: m.deleted,
-          editedAt: m.editedAt,
-          replyCount: m.replyCount,
-          parentMessageId: m.parentMessageId,
-        })),
-      });
-    }
-  )
-);
-  
-  // ── Emoji Reactions ───────────────────────────────────────────
-socket.on(
-  'message:reaction',
-  safeSocketHandler(
-    socket,
-    'message:reaction',
-    async ({ messageId, emoji }) => {
+                socket.emit('thread:history', {
+                    parentMessageId,
+                    replies: replies.map((m) => ({
+                        id: m._id.toString(),
+                        userId: m.userId.toString(),
+                        username: m.username,
+                        role: m.role,
+                        text: m.text,
+                        timestamp: m.createdAt,
+                        deleted: m.deleted,
+                        editedAt: m.editedAt,
+                        replyCount: m.replyCount,
+                        parentMessageId: m.parentMessageId,
+                    })),
+                });
+            }
+        )
+    );
 
-      const message = await Message.findById(messageId);
+    // ── Emoji Reactions ───────────────────────────────────────────
+    socket.on(
+        'message:reaction',
+        safeSocketHandler(
+            socket,
+            'message:reaction',
+            async ({ messageId, emoji }) => {
 
-      if (!message)
-        return socket.emit('error:general', 'Message not found.');
+                const message = await Message.findById(messageId);
 
-      let reaction = message.reactions.find(
-        r => r.emoji === emoji
-      );
+                if (!message)
+                    return socket.emit('error:general', 'Message not found.');
 
-      if (!reaction) {
+                let reaction = message.reactions.find(
+                    r => r.emoji === emoji
+                );
 
-        message.reactions.push({
-          emoji,
-          users: [socket.user.username]
-        });
+                if (!reaction) {
 
-      } else {
+                    message.reactions.push({
+                        emoji,
+                        users: [socket.user.username]
+                    });
 
-        const alreadyReacted = reaction.users.includes(
-          socket.user.username
-        );
+                } else {
 
-        if (alreadyReacted) {
+                    const alreadyReacted = reaction.users.includes(
+                        socket.user.username
+                    );
 
-          reaction.users = reaction.users.filter(
-            user => user !== socket.user.username
-          );
+                    if (alreadyReacted) {
 
-          // remove empty emoji group
-          if (reaction.users.length === 0) {
-            message.reactions = message.reactions.filter(
-              r => r.emoji !== emoji
-            );
-          }
+                        reaction.users = reaction.users.filter(
+                            user => user !== socket.user.username
+                        );
 
-        } else {
-          reaction.users.push(socket.user.username);
-        }
-      }
+                        // remove empty emoji group
+                        if (reaction.users.length === 0) {
+                            message.reactions = message.reactions.filter(
+                                r => r.emoji !== emoji
+                            );
+                        }
 
-      await message.save();
+                    } else {
+                        reaction.users.push(socket.user.username);
+                    }
+                }
 
-      const updatedMessage = await Message.findById(messageId);
+                await message.save();
 
-      const room = await Room.findOne({
-        name: message.roomName
-      });
+                const updatedMessage = await Message.findById(messageId);
 
-      if (room) {
-        io.to(room._id.toString()).emit(
-          'message:reaction:update',
-          {
-            messageId,
-            reactions: updatedMessage.reactions,
-          }
-        );
-      }
+                const room = await Room.findOne({
+                    name: message.roomName
+                });
 
-    }
-  ),
-  'Failed to react to message.'
-);
+                if (room) {
+
+                    const payload = {
+                        messageId,
+                        reactions: updatedMessage.reactions,
+                    };
+
+                    // users joined via room id
+                    io.to(room._id.toString()).emit(
+                        'message:reaction:update',
+                        payload
+                    );
+
+                    // users joined via room name
+                    io.to(message.roomName).emit(
+                        'message:reaction:update',
+                        payload
+                    );
+                }
+
+            }
+        ),
+        'Failed to react to message.'
+    );
 
     // ── Category CRUD ──────────────────────────────────────────────
     socket.on('category:create', safeSocketHandler(socket, 'category:create', async ({ name }) => {
