@@ -16,6 +16,7 @@ const DirectMessage = require('./models/DirectMessage');
 const { generateToken, socketAuthMiddleware, verifyToken } = require('./middleware/auth');
 const { ROLES, hasPermission } = require('./data/store'); // <-- IMPORTED WEIGHT SYSTEM
 
+const ServerSettings = require('./models/ServerSettings');
 const app = express();
 const server = http.createServer(app);
 
@@ -81,6 +82,17 @@ async function broadcastStructure() {
         categoryMap.get(catKey).channels.push(roomToChannel(r));
     }
     io.emit('structure:update', [...categoryMap.values()]);
+}
+
+// ─── Server Settings helpers ──────────────────────────────────────
+async function getServerSetting(key, defaultValue) {
+    const setting = await ServerSettings.findOne({ key });
+    return setting ? setting.value : defaultValue;
+}
+
+async function broadcastSettings() {
+    const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
+    io.emit('settings:update', { allowUserChannelCreation });
 }
 
 function roomToChannel(r) {
@@ -655,6 +667,8 @@ io.on('connection', async (socket) => {
         categoryMap.get(catKey).channels.push(roomToChannel(r));
     }
     socket.emit('structure:update', [...categoryMap.values()]);
+    const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
+    socket.emit('settings:update', { allowUserChannelCreation });
     console.log(`[+] ${socket.user.username} (${socket.user.role})`);
 
     // ── Join channel (by name) ─────────────────────────────────────
@@ -806,8 +820,14 @@ io.on('connection', async (socket) => {
 
     // ── Owner: channel CRUD ────────────────────────────────────────
     socket.on('channel:create', safeSocketHandler(socket, 'channel:create', async ({ categoryId, name, description, emoji }) => {
-        if (socket.user.role !== 'owner')
-            return socket.emit('error:permission', 'Owner only.');
+        const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
+        const isOwner = socket.user.role === 'owner';
+        const isMod = ['owner', 'moderator'].includes(socket.user.role);
+
+        if (!isOwner && !allowUserChannelCreation)
+            return socket.emit('error:permission', 'Channel creation is restricted to admins.');
+        if (!isOwner && !isMod && !allowUserChannelCreation)
+            return socket.emit('error:permission', 'You do not have permission to create channels.');
         if (!name?.trim()) return;
         const exists = await Room.findOne({ name: name.trim().toLowerCase() });
         if (exists) return socket.emit('error:general', 'Channel name already exists.');
@@ -888,6 +908,23 @@ io.on('connection', async (socket) => {
             text: `✅ #${room.name} is now ${room.isPrivate ? 'private 👁️' : 'public 🌐'}`,
         });
     }, 'Failed to update channel settings.'));
+
+     // ── Server Settings ────────────────────────────────────────────
+    socket.on('settings:get', safeSocketHandler(socket, 'settings:get', async () => {
+        const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
+        socket.emit('settings:update', { allowUserChannelCreation });
+    }, 'Failed to get settings.'));
+
+    socket.on('settings:update', safeSocketHandler(socket, 'settings:update', async ({ key, value }) => {
+        if (socket.user.role !== 'owner')
+            return socket.emit('error:permission', 'Owner only.');
+        await ServerSettings.findOneAndUpdate(
+            { key },
+            { value },
+            { upsert: true, new: true }
+        );
+        await broadcastSettings();
+    }, 'Failed to update settings.'));
 
     // ── Pin / delete message ───────────────────────────────────────
     socket.on('message:pin', safeSocketHandler(socket, 'message:pin', async ({ channelId, roomName: rName, messageId }) => {

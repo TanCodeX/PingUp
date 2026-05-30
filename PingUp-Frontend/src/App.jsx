@@ -43,6 +43,7 @@ const [threadReplies, setThreadReplies] = useState([]);
   const [activeDM,      setActiveDM]      = useState(null);
   const [dmNotifs,      setDmNotifs]      = useState([]);
   const [dmToast,       setDmToast]       = useState(null);
+  const [allowUserChannelCreation, setAllowUserChannelCreation] = useState(false);
 
   const socketRef = useRef(null);
 
@@ -72,8 +73,16 @@ const [threadReplies, setThreadReplies] = useState([]);
     socketRef.current = socket;
     socket.connect();
 
+    socket.on('connect', () => {
+        socket.emit('settings:get');
+    });
+
     socket.on('users:update', setOnlineUsers);
     socket.on('structure:update', setCategories);
+
+    socket.on('settings:update', ({ allowUserChannelCreation }) => {
+        setAllowUserChannelCreation(allowUserChannelCreation);
+    });
 
     socket.on('role:updated', ({ role }) => {
       setCurrentUser(u => {
@@ -291,6 +300,7 @@ const [threadReplies, setThreadReplies] = useState([]);
             token={token}
             onClose={() => setShowAdmin(false)}
             embedded
+            allowUserChannelCreation={allowUserChannelCreation}
           />
         </div>
       );
@@ -446,6 +456,7 @@ onOpenThread={handleOpenThread}
         onChannelSelect={handleChannelSelect}
         onLogout={handleLogout}
         onOpenProfile={() => setShowProfile(true)}
+        allowUserChannelCreation={allowUserChannelCreation}
         onShowFriends={() => {
           setShowFriends(true);
           setActiveChannel(null);
