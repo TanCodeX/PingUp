@@ -42,6 +42,7 @@ const [threadReplies, setThreadReplies] = useState([]);
   const [showAdmin,     setShowAdmin]     = useState(false);
   const [activeDM,      setActiveDM]      = useState(null);
   const [dmNotifs,      setDmNotifs]      = useState([]);
+  const [sessionMsg, setSessionMsg] = useState(null);
   const [dmToast,       setDmToast]       = useState(null);
 
   const socketRef = useRef(null);
@@ -208,23 +209,27 @@ const [threadReplies, setThreadReplies] = useState([]);
 
     socket.on('connect_error', (err) => {
       if (['INVALID_TOKEN', 'AUTH_REQUIRED', 'USER_NOT_FOUND'].includes(err.message)) {
-        alert('Your session has expired. Please log in again.');
+        console.error('[socket] Auth error:', err.message);
+        setSessionMsg('Your session has expired. Please log in again.');
         handleLogout();
       }
     });
 
     socket.on('disconnect', (reason) => {
       if (reason === 'io server disconnect') {
+        console.error('[socket] Server disconnected this client:', reason);
+        setSessionMsg('You were disconnected by the server. Please log in again.');
         handleLogout();
       }
     });
     return () => socket.removeAllListeners();
-  }, [token, currentUser?.id]);
+  }, [token, currentUser?.id,  handleLogout]);
 
   // ── Auth ───────────────────────────────────────────────────────
   const handleLogin = (user, tok) => {
     setCurrentUser(user);
     setToken(tok);
+    setSessionMsg(null); 
     localStorage.setItem('token', tok);
     localStorage.setItem('user',  JSON.stringify(user));
   };
@@ -294,10 +299,26 @@ const [threadReplies, setThreadReplies] = useState([]);
 
   // ── Not logged in ──────────────────────────────────────────────
   if (!currentUser) {
-    if (authPage === 'register')
-      return <Register onLogin={handleLogin} onSwitch={() => setAuthPage('login')} />;
-    return <Login onLogin={handleLogin} onSwitch={() => setAuthPage('register')} />;
-  }
+  return (
+    <>
+      {sessionMsg && (
+        <div style={{
+          background: '#f87171',
+          color: '#fff',
+          padding: '12px 20px',
+          textAlign: 'center',
+          fontWeight: 500,
+        }}>
+          {sessionMsg}
+        </div>
+      )}
+      {authPage === 'login'
+        ? <Login onLogin={handleLogin} onSwitch={() => setAuthPage('register')} />
+        : <Register onRegister={handleLogin} onSwitch={() => setAuthPage('login')} />
+      }
+    </>
+  );
+}
 
   // ── Render helpers ─────────────────────────────────────────────
   function renderChatArea() {
