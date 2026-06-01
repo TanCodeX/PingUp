@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { FiEye, FiEyeOff } from "react-icons/fi";
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -23,6 +24,7 @@ export default function Register({ onLogin, onSwitch }) {
   const [error, setError] = useState('');
   const [diceMsg, setDiceMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   function handleChange(e) {
     const { name, value, type, checked } = e.target;
@@ -259,11 +261,21 @@ export default function Register({ onLogin, onSwitch }) {
 
                 <input
                   name="password"
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   value={form.password}
                   onChange={handleChange}
                   required
                 />
+                <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="auth-eye"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+              >
+                {showPassword ? ( <FiEyeOff size={18} style={{ color: "var(--text-secondary)" }} />) : (
+                  <FiEye size={18} style={{ color: "var(--text-secondary)" }} />)}
+              </button>
               </div>
 
               <div className="reg-field">
