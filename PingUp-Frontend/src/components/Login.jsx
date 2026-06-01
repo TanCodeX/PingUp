@@ -1,9 +1,6 @@
 import { useState } from 'react';
-<<<<<<< HEAD
-import { FiEye, FiEyeOff } from "react-icons/fi";
-=======
 import { getApiUrl } from '../api';
->>>>>>> 9f0fbde (Create PingUp-Frontend/src/api.js with getApiUrl helper)
+import { FiEye, FiEyeOff } from "react-icons/fi";
 
 export default function Login({ onLogin, onSwitch }) {
   const [email, setEmail] = useState('');
