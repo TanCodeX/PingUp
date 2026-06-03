@@ -226,26 +226,65 @@ app.post('/api/login', async (req, res) => {
 
 // ─── Get structure ────────────────────────────────────────────────
 app.get('/api/structure', async (req, res) => {
-    const decoded = authHeader(req, res);
-    if (!decoded) return;
-    const me = await User.findById(decoded.id);
+const decoded = authHeader(req, res);
+if (!decoded) return;
 
-    const rooms = await Room.find().sort({ category: 1, order: 1, createdAt: 1 });
-    const categoryMap = new Map();
-    for (const r of rooms) {
-        if (r.isPrivate && !hasPermission(me.role, ROLES.MODERATOR)) continue; // Keep private from members
-        const catKey = r.category || 'general';
-        if (!categoryMap.has(catKey))
-            categoryMap.set(catKey, { id: `cat-${catKey}`, name: catKey, channels: [] });
-        categoryMap.get(catKey).channels.push(roomToChannel(r));
+const me = await User.findById(decoded.id);
+
+const rooms = await Room.find().sort({ category: 1, order: 1, createdAt: 1 });
+const categoryMap = new Map();
+
+for (const r of rooms) {
+  if (r.isPrivate) {
+    const isModOrOwner = hasPermission(me.role, ROLES.MODERATOR);
+
+    const isAllowedUser = r.allowedUsers.some(
+      id => id.toString() === me._id.toString()
+    );
+
+    if (!isModOrOwner && !isAllowedUser) {
+      continue;
     }
-    res.json([...categoryMap.values()]);
+  }
+
+  const catKey = r.category || 'general';
+
+  if (!categoryMap.has(catKey)) {
+    categoryMap.set(catKey, {
+      id: `cat-${catKey}`,
+      name: catKey,
+      channels: []
+    });
+  }
+
+  categoryMap.get(catKey).channels.push(roomToChannel(r));
+}
+
+res.json([...categoryMap.values()]);
 });
 
 // ─── Get Rooms (legacy) ───────────────────────────────────────────
 app.get('/api/rooms', async (req, res) => {
-    const rooms = await Room.find().sort({ createdAt: 1 });
-    res.json(rooms.map(r => roomToChannel(r)));
+const decoded = authHeader(req, res);
+if (!decoded) return;
+
+const me = await User.findById(decoded.id);
+
+const rooms = await Room.find().sort({ createdAt: 1 });
+
+const filteredRooms = rooms.filter(room => {
+  if (!room.isPrivate) return true;
+
+  if (hasPermission(me.role, ROLES.MODERATOR)) {
+    return true;
+  }
+
+  return room.allowedUsers?.some(
+    userId => userId.toString() === me._id.toString()
+  );
+});
+
+res.json(filteredRooms.map(r => roomToChannel(r)));
 });
 
 // ─── Get Users ────────────────────────────────────────────────────
@@ -702,12 +741,35 @@ io.on('connection', async (socket) => {
     const rooms = await Room.find().sort({ category: 1, order: 1, createdAt: 1 });
     const categoryMap = new Map();
     for (const r of rooms) {
-        if (r.isPrivate && socket.user.role === ROLES.MEMBER) continue;
-        const catKey = r.category || 'general';
-        if (!categoryMap.has(catKey))
-            categoryMap.set(catKey, { id: `cat-${catKey}`, name: catKey, channels: [] });
-        categoryMap.get(catKey).channels.push(roomToChannel(r));
+
+    if (r.isPrivate) {
+
+        const isModOrOwner = hasPermission(
+            socket.user.role,
+            ROLES.MODERATOR
+        );
+
+        const isAllowedUser = r.allowedUsers.some(
+            id => id.toString() === socket.user.id
+        );
+
+        if (!isModOrOwner && !isAllowedUser) {
+            continue;
+        }
     }
+
+    const catKey = r.category || 'general';
+
+    if (!categoryMap.has(catKey)) {
+        categoryMap.set(catKey, {
+            id: `cat-${catKey}`,
+            name: catKey,
+            channels: []
+        });
+    }
+
+    categoryMap.get(catKey).channels.push(roomToChannel(r));
+}
     socket.emit('structure:update', [...categoryMap.values()]);
     const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
     socket.emit('settings:update', { allowUserChannelCreation });
@@ -1201,6 +1263,7 @@ replyCount: 0, imageUrl: imageUrl || null,
                 const room = await Room.findOne({
                     name: message.roomName
                 });
+
 
                 if (room) {
 
