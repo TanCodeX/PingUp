@@ -280,6 +280,12 @@ app.post('/api/refresh', async (req, res) => {
 app.post('/api/logout', async (req, res) => {
     try {
         const { refreshToken } = req.body;
+        
+        if (!refreshToken) {
+            return res.status(400).json({
+                error: 'Refresh token required'
+            });
+        }
 
         const user = await User.findOne({ refreshToken });
 
