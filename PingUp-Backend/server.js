@@ -5,6 +5,20 @@ const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// Image upload setup
+const uploadDir = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname)),
+});
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 const { pubClient, subClient, redisClient, redisReady } = require('./config/redis');
 const { messageQueue } = require('./services/messageQueue');
@@ -13,9 +27,10 @@ const User = require('./models/User');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
 const DirectMessage = require('./models/DirectMessage');
-const { generateToken, socketAuthMiddleware, verifyToken } = require('./middleware/auth');
+const { generateToken, socketAuthMiddleware, verifyToken, generateRefreshToken } = require('./middleware/auth');
 const { ROLES, hasPermission } = require('./data/store'); // <-- IMPORTED WEIGHT SYSTEM
 
+const ServerSettings = require('./models/ServerSettings');
 const app = express();
 const server = http.createServer(app);
 
@@ -42,6 +57,15 @@ app.use(
     })
 );
 app.use(express.json());
+// Serve uploaded images
+app.use('/uploads', express.static(uploadDir));
+
+// Image upload route
+app.post('/api/upload', verifyToken, upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const imageUrl = `/uploads/${req.file.filename}`;
+  res.json({ imageUrl });
+});
 
 
 // ─── Role Helpers ──────────────────────────────────────────────────
@@ -80,6 +104,21 @@ async function broadcastStructure() {
         categoryMap.get(catKey).channels.push(roomToChannel(r));
     }
     io.emit('structure:update', [...categoryMap.values()]);
+}
+
+// ─── Server Settings helpers ──────────────────────────────────────
+async function getServerSetting(key, defaultValue) {
+    try {
+        const setting = await ServerSettings.findOne({ key });
+        return setting ? setting.value === true : defaultValue;
+    } catch {
+        return defaultValue;
+    }
+}
+
+async function broadcastSettings() {
+    const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
+    io.emit('settings:update', { allowUserChannelCreation });
 }
 
 function roomToChannel(r) {
@@ -141,7 +180,7 @@ app.post('/api/register', async (req, res) => {
 
         const userCount = await User.countDocuments();
         const isFirst = userCount === 0;
-        const role = isFirst ? ROLES.OWNER : ROLES.MEMBER;
+        const role = isFirst ? ROLES.ADMIN : ROLES.MEMBER;
 
         const user = await User.create({
             username: username.trim().toLowerCase(),
@@ -152,13 +191,20 @@ app.post('/api/register', async (req, res) => {
             email: email?.trim() || '',
         });
 
-        const token = generateToken(user);
+        const accessToken = generateToken(user);
+        const refreshToken = generateRefreshToken(user);
+
+        user.refreshToken = refreshToken;
+
+        await user.save();
+
         res.status(201).json({
-            token,
-            user: user.toSafeObject(),
+            accessToken,
+            refreshToken,
+            user: user.toPrivateProfile(),
             roleMessage: isFirst
-                ? '👑 You are the ADMIN — full system control granted.'
-                : '👋 Welcome! You joined as a member.',
+                  ? '👑 You are the ADMIN — full system control granted.'
+                  : '👋 Welcome! You joined as a member.',
         });
     } catch (err) {
         console.error(err);
@@ -177,36 +223,148 @@ app.post('/api/login', async (req, res) => {
             return res.status(403).json({ error: 'You have been banned.' });
 
         user.loginCount += 1;
+
+        const accessToken = generateToken(user);
+        const refreshToken = generateRefreshToken(user);
+        user.refreshToken = refreshToken;
+
         await user.save();
-        const token = generateToken(user);
-        res.json({ token, user: user.toSafeObject() });
+
+        res.json({
+            accessToken,
+            refreshToken,
+            user: user.toPrivateProfile()
+        });
     } catch (err) {
         res.status(500).json({ error: 'Server error.' });
     }
 });
 
+// ─── Refresh Route ────────────────────────────────────────────────
+app.post('/api/refresh', async (req, res) => {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+        return res.status(401).json({
+            error: 'Refresh token required'
+        });
+    }
+
+    try {
+        const decoded = jwt.verify(
+            refreshToken,
+            process.env.REFRESH_SECRET
+        );
+
+        const user = await User.findById(decoded.id);
+
+        if (!user || user.refreshToken !== refreshToken) {
+            return res.status(403).json({
+                error: 'Invalid refresh token'
+            });
+        }
+
+        const accessToken = generateToken(user);
+
+        res.json({ accessToken });
+
+    } catch (err) {
+        res.status(403).json({
+            error: 'Invalid or expired refresh token'
+        });
+    }
+});
+
+// ─── Logout ────────────────────────────────────────────────
+app.post('/api/logout', async (req, res) => {
+    try {
+        const { refreshToken } = req.body;
+        
+        if (!refreshToken) {
+            return res.status(400).json({
+                error: 'Refresh token required'
+            });
+        }
+
+        const user = await User.findOne({ refreshToken });
+
+        if (user) {
+            user.refreshToken = null;
+            await user.save();
+        }
+
+        res.json({
+            message: 'Logged out successfully'
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            error: 'Server error.'
+        });
+    }
+});
+
 // ─── Get structure ────────────────────────────────────────────────
 app.get('/api/structure', async (req, res) => {
-    const decoded = authHeader(req, res);
-    if (!decoded) return;
-    const me = await User.findById(decoded.id);
+const decoded = authHeader(req, res);
+if (!decoded) return;
 
-    const rooms = await Room.find().sort({ category: 1, order: 1, createdAt: 1 });
-    const categoryMap = new Map();
-    for (const r of rooms) {
-        if (r.isPrivate && !hasPermission(me.role, ROLES.MODERATOR)) continue; // Keep private from members
-        const catKey = r.category || 'general';
-        if (!categoryMap.has(catKey))
-            categoryMap.set(catKey, { id: `cat-${catKey}`, name: catKey, channels: [] });
-        categoryMap.get(catKey).channels.push(roomToChannel(r));
+const me = await User.findById(decoded.id);
+
+const rooms = await Room.find().sort({ category: 1, order: 1, createdAt: 1 });
+const categoryMap = new Map();
+
+for (const r of rooms) {
+  if (r.isPrivate) {
+    const isModOrOwner = hasPermission(me.role, ROLES.MODERATOR);
+
+    const isAllowedUser = r.allowedUsers.some(
+      id => id.toString() === me._id.toString()
+    );
+
+    if (!isModOrOwner && !isAllowedUser) {
+      continue;
     }
-    res.json([...categoryMap.values()]);
+  }
+
+  const catKey = r.category || 'general';
+
+  if (!categoryMap.has(catKey)) {
+    categoryMap.set(catKey, {
+      id: `cat-${catKey}`,
+      name: catKey,
+      channels: []
+    });
+  }
+
+  categoryMap.get(catKey).channels.push(roomToChannel(r));
+}
+
+res.json([...categoryMap.values()]);
 });
 
 // ─── Get Rooms (legacy) ───────────────────────────────────────────
 app.get('/api/rooms', async (req, res) => {
-    const rooms = await Room.find().sort({ createdAt: 1 });
-    res.json(rooms.map(r => roomToChannel(r)));
+const decoded = authHeader(req, res);
+if (!decoded) return;
+
+const me = await User.findById(decoded.id);
+
+const rooms = await Room.find().sort({ createdAt: 1 });
+
+const filteredRooms = rooms.filter(room => {
+  if (!room.isPrivate) return true;
+
+  if (hasPermission(me.role, ROLES.MODERATOR)) {
+    return true;
+  }
+
+  return room.allowedUsers?.some(
+    userId => userId.toString() === me._id.toString()
+  );
+});
+
+res.json(filteredRooms.map(r => roomToChannel(r)));
 });
 
 // ─── Get Users ────────────────────────────────────────────────────
@@ -237,13 +395,24 @@ app.put('/api/profile', async (req, res) => {
     try {
         const decoded = authHeader(req, res);
         if (!decoded) return;
-        const { displayName, email, phone } = req.body;
-        const user = await User.findByIdAndUpdate(
-            decoded.id, { displayName, email, phone }, { new: true }
-        );
-        res.json({ user: user.toSafeObject() });
-    } catch (err) {
-        res.status(500).json({ error: 'Server error.' });
+        const updates = {
+            ...(req.body.username !== undefined ? { username: req.body.username.trim().toLowerCase() } : {}),
+            ...(req.body.displayName !== undefined ? { displayName: req.body.displayName.trim() } : {}),
+            ...(req.body.email !== undefined ? { email: req.body.email.trim() } : {}),
+            ...(req.body.phone !== undefined ? { phone: req.body.phone.trim() } : {}),
+        };
+        const user = await User.findByIdAndUpdate(decoded.id, updates, {
+          new: true,
+          runValidators: true
+        });
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        res.json({ user: user.toPrivateProfile() });
+    }catch (err) {
+        if (err?.code === 11000 && err?.keyPattern?.username) {
+           return res.status(409).json({ error: 'Username already taken.' });
+        }
+        console.error(err);
+        return res.status(500).json({ error: 'Server error.' });
     }
 });
 
@@ -316,7 +485,7 @@ async function processCommand(socket, roomName, text) {
     const [cmd, ...args] = text.slice(1).split(' ');
 
     // Use the new Weight-based checker!
-    const isOwner = hasPermission(socket.user.role, ROLES.OWNER);
+    const isOwner = hasPermission(socket.user.role, ROLES.ADMIN);
     const isMod = hasPermission(socket.user.role, ROLES.MODERATOR);
     console.log(`[DEBUG] User Role: ${socket.user.role} | isOwner: ${isOwner}`);
     const ok = msg => socket.emit('command:response', { type: 'success', text: `✅ ${msg}` });
@@ -427,7 +596,7 @@ async function processCommand(socket, roomName, text) {
             if (!isMod) return perm('Moderators only.');
             const target = await User.findOne({ username: args[0], online: true });
             if (!target) return err('User not found or offline.');
-            if (target.role === ROLES.OWNER) return err('Cannot kick the admin.');
+            if (target.role === ROLES.ADMIN) return err('Cannot kick the admin.');
             if (socket.user.role === ROLES.MODERATOR && target.role !== ROLES.MEMBER)
                 return err('Moderators can only kick members.');
             const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === target._id.toString());
@@ -470,12 +639,14 @@ async function processCommand(socket, roomName, text) {
             if (!isOwner) return perm('Admin only.');
             const [oldName, newName] = args;
             if (!oldName || !newName) return err('Usage: /renamechannel <old> <new>');
+            const formattedNewName = newName.toLowerCase().replace(/\s+/g, '-');
             const room = await Room.findOneAndUpdate(
                 { name: oldName.toLowerCase() },
-                { name: newName.toLowerCase().replace(/\s+/g, '-') },
+                { name: formattedNewName },
                 { new: true }
             );
             if (!room) return err(`#${oldName} not found.`);
+            await Message.updateMany({ roomName: oldName.toLowerCase() }, { roomName: formattedNewName });
             await broadcastStructure();
             ok(`#${oldName} → #${newName}.`);
             break;
@@ -567,10 +738,14 @@ async function processCommand(socket, roomName, text) {
             const [targetName, newRole] = args;
             if (![ROLES.MODERATOR, ROLES.MEMBER].includes(newRole))
                 return err('Role must be: moderator or member');
-            const targetUser = await User.findOneAndUpdate(
-                { username: targetName }, { role: newRole }, { new: true }
-            );
+            // Lookup first so we can guard the target role before any write
+            // (prevents owners from demoting themselves or other owners —
+            //  matches the existing /kick, /reroll, /ban pattern).
+            const targetUser = await User.findOne({ username: targetName });
             if (!targetUser) return err('User not found.');
+            if (targetUser.role === ROLES.ADMIN)
+                return err('Cannot change the admin role.');
+            await User.updateOne({ _id: targetUser._id }, { role: newRole });
             const ls = [...io.sockets.sockets.values()].find(s => s.user?.id === targetUser._id.toString());
             if (ls) { ls.user.role = newRole; ls.emit('role:updated', { role: newRole }); }
             await broadcastUserList();
@@ -583,7 +758,7 @@ async function processCommand(socket, roomName, text) {
             if (!isOwner) return perm('Admin only.');
             const target = await User.findOne({ username: args[0] });
             if (!target) return err('User not found.');
-            if (target.role === ROLES.OWNER) return err('Cannot ban the admin.');
+            if (target.role === ROLES.ADMIN) return err('Cannot ban the admin.');
             target.banned = true;
             await target.save();
             const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === target._id.toString());
@@ -597,7 +772,7 @@ async function processCommand(socket, roomName, text) {
             if (!isOwner) return perm('Admin only.');
             const target = await User.findOne({ username: args[0] });
             if (!target) return err('User not found.');
-            if (target.role === ROLES.OWNER) return err('Cannot reroll the admin.');
+            if (target.role === ROLES.ADMIN) return err('Cannot reroll the admin.');
             const newRole = rollRole();
             target.role = newRole;
             await target.save();
@@ -650,13 +825,38 @@ io.on('connection', async (socket) => {
     const rooms = await Room.find().sort({ category: 1, order: 1, createdAt: 1 });
     const categoryMap = new Map();
     for (const r of rooms) {
-        if (r.isPrivate && socket.user.role === ROLES.MEMBER) continue;
-        const catKey = r.category || 'general';
-        if (!categoryMap.has(catKey))
-            categoryMap.set(catKey, { id: `cat-${catKey}`, name: catKey, channels: [] });
-        categoryMap.get(catKey).channels.push(roomToChannel(r));
+
+    if (r.isPrivate) {
+
+        const isModOrOwner = hasPermission(
+            socket.user.role,
+            ROLES.MODERATOR
+        );
+
+        const isAllowedUser = r.allowedUsers.some(
+            id => id.toString() === socket.user.id
+        );
+
+        if (!isModOrOwner && !isAllowedUser) {
+            continue;
+        }
     }
+
+    const catKey = r.category || 'general';
+
+    if (!categoryMap.has(catKey)) {
+        categoryMap.set(catKey, {
+            id: `cat-${catKey}`,
+            name: catKey,
+            channels: []
+        });
+    }
+
+    categoryMap.get(catKey).channels.push(roomToChannel(r));
+}
     socket.emit('structure:update', [...categoryMap.values()]);
+    const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
+    socket.emit('settings:update', { allowUserChannelCreation });
     console.log(`[+] ${socket.user.username} (${socket.user.role})`);
 }catch(err){
     console.error('[connection] setup error:', err);
@@ -746,9 +946,9 @@ io.on('connection', async (socket) => {
         safeSocketHandler(
             socket,
             'message:send',
-            async ({ roomName, channelId, text, parentMessageId }) => {
+            async ({ roomName, channelId, text, parentMessageId, imageUrl }) => {
                 const trimmed = text?.trim();
-                if (!trimmed) return;
+               if (!trimmed && !imageUrl) return;
 
                 let resolvedRoom = roomName;
                 let room = null;
@@ -765,7 +965,7 @@ io.on('connection', async (socket) => {
                 const freshUser = await User.findById(socket.user.id);
 
                 // Check using new weight permissions
-                if (room.isReadOnly && !hasPermission(freshUser.role, ROLES.OWNER))
+                if (room.isReadOnly && !hasPermission(freshUser.role, ROLES.ADMIN))
                     return socket.emit('error:permission', `#${room.name} is read-only.`);
                 if (room.isLocked)
                     return socket.emit('error:permission', `#${room.name} is locked.`);
@@ -775,7 +975,7 @@ io.on('connection', async (socket) => {
                     return socket.emit('error:permission', 'You cannot send messages.');
 
                 const msgId = new mongoose.Types.ObjectId();
-                
+
                 await messageQueue.add('send-message', {
                     _id: msgId,
                     roomName: resolvedRoom,
@@ -783,15 +983,16 @@ io.on('connection', async (socket) => {
                     username: socket.user.username,
                     role: freshUser.role,
                     text: trimmed,
-                    parentMessageId: parentMessageId || null,
+                    parentMessageId: parentMessageId || null, 
+                    imageUrl: imageUrl || null,
                 });
 
                 const payload = {
                     id: msgId.toString(), userId: socket.user.id,
                     username: socket.user.username, role: freshUser.role,
-                    text: trimmed, timestamp: msg.createdAt, deleted: false, pinned: false,
-                    parentMessageId: msg.parentMessageId,
-                    replyCount: msg.replyCount,
+                    text: trimmed, timestamp: new Date(), deleted: false, pinned: false,
+parentMessageId: parentMessageId || null,
+replyCount: 0, imageUrl: imageUrl || null,
                 };
 
                 io.to(resolvedRoom).emit('message:new', payload);
@@ -814,8 +1015,14 @@ io.on('connection', async (socket) => {
 
     // ── Owner: channel CRUD ────────────────────────────────────────
     socket.on('channel:create', safeSocketHandler(socket, 'channel:create', async ({ categoryId, name, description, emoji }) => {
-        if (socket.user.role !== 'owner')
-            return socket.emit('error:permission', 'Owner only.');
+        const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
+        const isOwner = socket.user.role === 'owner';
+        const isMod = ['owner', 'moderator'].includes(socket.user.role);
+
+        if (!isOwner && !allowUserChannelCreation)
+            return socket.emit('error:permission', 'Channel creation is restricted to admins.');
+        if (!isOwner && !isMod && !allowUserChannelCreation)
+            return socket.emit('error:permission', 'You do not have permission to create channels.');
         if (!name?.trim()) return;
         const exists = await Room.findOne({ name: name.trim().toLowerCase() });
         if (exists) return socket.emit('error:general', 'Channel name already exists.');
@@ -843,12 +1050,17 @@ io.on('connection', async (socket) => {
         if (socket.user.role !== 'owner')
             return socket.emit('error:permission', 'Owner only.');
         if (!newName?.trim()) return;
-        const room = await Room.findByIdAndUpdate(
-            channelId,
-            { name: newName.trim().toLowerCase().replace(/\s+/g, '-') },
-            { new: true }
-        );
-        if (room) await broadcastStructure();
+        
+        const room = await Room.findById(channelId);
+        if (!room) return;
+        const oldName = room.name;
+        const formattedNewName = newName.trim().toLowerCase().replace(/\s+/g, '-');
+        
+        room.name = formattedNewName;
+        await room.save();
+        
+        await Message.updateMany({ roomName: oldName }, { roomName: formattedNewName });
+        await broadcastStructure();
     }, 'Failed to rename channel.'));
 
     socket.on('channel:toggleReadOnly', safeSocketHandler(socket, 'channel:toggleReadOnly', async ({ channelId }) => {
@@ -897,27 +1109,68 @@ io.on('connection', async (socket) => {
         });
     }, 'Failed to update channel settings.'));
 
+     // ── Server Settings ────────────────────────────────────────────
+    socket.on('settings:get', safeSocketHandler(socket, 'settings:get', async () => {
+        const allowUserChannelCreation = await getServerSetting('allowUserChannelCreation', false);
+        socket.emit('settings:update', { allowUserChannelCreation });
+    }, 'Failed to get settings.'));
+
+    socket.on('settings:update', safeSocketHandler(socket, 'settings:update', async (payload) => {
+        // Validate payload is a non-null object
+        if (!payload || typeof payload !== 'object')
+            return socket.emit('error:general', 'Invalid settings payload.');
+
+        const { key, value } = payload;
+
+        // Validate key exists
+        if (!key)
+            return socket.emit('error:general', 'Settings key is required.');
+
+        if (socket.user.role !== 'owner')
+            return socket.emit('error:permission', 'Owner only.');
+
+        // Validate allowed keys
+        const ALLOWED_KEYS = ['allowUserChannelCreation'];
+        if (!ALLOWED_KEYS.includes(key))
+            return socket.emit('error:general', `Invalid settings key: ${key}`);
+
+        // Enforce boolean value
+        if (typeof value !== 'boolean')
+            return socket.emit('error:general', 'Settings value must be a boolean.');
+
+        await ServerSettings.findOneAndUpdate(
+            { key },
+            { value },
+            { upsert: true, new: true }
+        );
+        await broadcastSettings();
+    }, 'Failed to update settings.'));
+
     // ── Pin / delete message ───────────────────────────────────────
-    socket.on('message:pin', safeSocketHandler(socket, 'message:pin', async ({ channelId, roomName: rName, messageId }) => {
+    socket.on('message:pin', safeSocketHandler(socket, 'message:pin', async ({ messageId }) => {
         if (!['owner', 'moderator'].includes(socket.user.role))
             return socket.emit('error:permission', 'Moderators only.');
-        const query = channelId ? { _id: channelId } : { name: rName };
+        const query = socket.currentChannelId ? { _id: socket.currentChannelId } : { name: socket.currentRoom };
         const room = await Room.findOne(query);
         if (!room) return;
         const msg = await Message.findById(messageId);
         if (!msg) return;
+        
+        // Prevent IDOR: Verify message belongs to the target room
+        if (msg.roomName !== room.name) 
+            return socket.emit('error:permission', 'Message does not belong to this room.');
         const alreadyPinned = room.pinnedMessages.some(id => id.toString() === messageId);
         if (alreadyPinned) {
             room.pinnedMessages = room.pinnedMessages.filter(id => id.toString() !== messageId);
             await room.save();
-            const bc = channelId ? io.to(channelId) : io.to(rName);
+            const bc = socket.currentChannelId ? io.to(socket.currentChannelId) : io.to(socket.currentRoom);
             bc.emit('message:unpinned', { id: messageId });
         } else {
             if (room.pinnedMessages.length >= 50)
                 return socket.emit('error:general', 'Maximum 50 pinned messages reached.');
             room.pinnedMessages.push(messageId);
             await room.save();
-            const bc = channelId ? io.to(channelId) : io.to(rName);
+            const bc = socket.currentChannelId ? io.to(socket.currentChannelId) : io.to(socket.currentRoom);
             bc.emit('message:pinned', {
                 id: messageId, text: msg.text,
                 username: msg.username, pinnedBy: socket.user.username,
@@ -925,14 +1178,24 @@ io.on('connection', async (socket) => {
         }
     }, 'Failed to pin message.'));
 
-    socket.on('message:delete', safeSocketHandler(socket, 'message:delete', async ({ channelId, roomName: rName, messageId }) => {
+    socket.on('message:delete', safeSocketHandler(socket, 'message:delete', async ({ messageId }) => {
         if (!['owner', 'moderator'].includes(socket.user.role))
             return socket.emit('error:permission', 'Moderators only.');
+            
+        // Look up message first to verify room ownership
+        const targetMsg = await Message.findById(messageId);
+        if (!targetMsg) return;
+        
+        const query = socket.currentChannelId ? { _id: socket.currentChannelId } : { name: socket.currentRoom };
+        const resolvedRoom = await Room.findOne(query);
+        if (!resolvedRoom || targetMsg.roomName !== resolvedRoom.name)
+            return socket.emit('error:permission', 'Message does not belong to this room.');
+
         const msg = await Message.findByIdAndUpdate(
             messageId, { deleted: true, text: '[message deleted]' }, { new: true }
         );
         if (!msg) return;
-        const bc = channelId ? io.to(channelId) : io.to(rName);
+        const bc = socket.currentChannelId ? io.to(socket.currentChannelId) : io.to(socket.currentRoom);
         bc.emit('message:deleted', { id: messageId });
     }, 'Failed to delete message.'));
 
@@ -992,13 +1255,23 @@ io.on('connection', async (socket) => {
 
                 if (!parentMessageId) return;
 
+                const parentMsg = await Message.findById(parentMessageId);
+                if (!parentMsg) return socket.emit('error:general', 'Parent message not found.');
+
+                // Prevent IDOR: Check room access
+                const room = await Room.findOne({ name: parentMsg.roomName });
+                if (!room) return socket.emit('error:permission', 'Forbidden: This thread is unavailable.');
+                if (room.isPrivate && socket.user.role === ROLES.MEMBER) {
+                    const allowed = room.allowedUsers.map(id => id.toString()).includes(socket.user.id);
+                    if (!allowed) return socket.emit('error:permission', 'Forbidden: This thread is in a private channel.');
+                }
+
                 const replies = await Message.find({
                     parentMessageId,
                     deleted: false,
                 })
                     .sort({ createdAt: 1 })
                     .lean();
-
                 socket.emit('thread:history', {
                     parentMessageId,
                     replies: replies.map((m) => ({
@@ -1017,7 +1290,6 @@ io.on('connection', async (socket) => {
             }
         )
     );
-
     // ── Emoji Reactions ───────────────────────────────────────────
     socket.on(
         'message:reaction',
@@ -1074,6 +1346,7 @@ io.on('connection', async (socket) => {
                     name: message.roomName
                 });
 
+
                 if (room) {
 
                     const payload = {
@@ -1128,7 +1401,7 @@ io.on('connection', async (socket) => {
             return socket.emit('error:permission', 'Owner only.');
         if (!['member', 'moderator'].includes(role)) return;
         const target = await User.findById(targetId);
-        if (!target || target.role === ROLES.OWNER) return;
+        if (!target || target.role === ROLES.ADMIN) return;
         target.role = role;
         await target.save();
         const ls = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
@@ -1141,7 +1414,7 @@ io.on('connection', async (socket) => {
         if (!['owner', 'moderator'].includes(socket.user.role))
             return socket.emit('error:permission', 'Insufficient permissions.');
         const target = await User.findById(targetId);
-        if (!target || target.role === ROLES.OWNER) return;
+        if (!target || target.role === ROLES.ADMIN) return;
         const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
         if (ts) { ts.emit('kicked', { by: socket.user.username }); ts.disconnect(true); }
         io.emit('room:notification', { text: `👢 ${target.username} kicked`, type: 'system' });
@@ -1151,7 +1424,7 @@ io.on('connection', async (socket) => {
         if (socket.user.role !== 'owner')
             return socket.emit('error:permission', 'Owner only.');
         const target = await User.findById(targetId);
-        if (!target || target.role === ROLES.OWNER) return;
+        if (!target || target.role === ROLES.ADMIN) return;
         target.banned = true;
         await target.save();
         const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
@@ -1198,43 +1471,63 @@ io.on('connection', async (socket) => {
         if (otherSocket) otherSocket.emit('dm:read', { conversationId: convId });
     }, 'Failed to open direct message.'));
 
-    socket.on('dm:send', safeSocketHandler(socket, 'dm:send', async ({ toUserId, text }) => {
-        const trimmed = text?.trim();
-        if (!trimmed) return;
-        const toUser = await User.findById(toUserId);
-        if (!toUser) return socket.emit('error:general', 'User not found.');
-        const convId = [socket.user.id, toUserId].sort().join('_');
-        const freshUser = await User.findById(socket.user.id);
-        const msg = await DirectMessage.create({
-            conversationId: convId,
-            participants: [socket.user.id, toUserId],
-            senderId: socket.user.id,
-            senderUsername: socket.user.username,
-            senderRole: freshUser.role,
-            text: trimmed,
-            read: false,
-        });
-        const payload = {
-            id: msg._id.toString(),
-            conversationId: convId,
-            senderId: socket.user.id,
-            senderUsername: socket.user.username,
-            senderRole: freshUser.role,
-            text: trimmed,
-            timestamp: msg.createdAt,
-            read: false,
-        };
-        io.to(`dm:${convId}`).emit('dm:message', payload);
-        const rs = [...io.sockets.sockets.values()].find(s => s.user?.id === toUserId);
-        if (rs && rs.currentDM !== convId) {
-            rs.emit('dm:notification', {
-                from: socket.user.username,
-                fromId: socket.user.id,
-                conversationId: convId,
-                preview: trimmed.slice(0, 60),
-            });
+    socket.on('dm:send', safeSocketHandler(socket, 'dm:send', async ({ toUserId, text, clientId }, callback) => {
+        try {
+            if (clientId) {
+                const existingMsg = await DirectMessage.findOne({ clientId });
+
+                if (existingMsg) {
+                    if (typeof callback == 'function') {
+                        return callback({ status: 'success', id: existingMsg._id.toString() });
+                    }
+                    return;
+                }
+            }
+
+            const convId = [toUserId, socket.user.id].sort().join('_');
+
+            let msg;
+            try {
+                msg = await DirectMessage.create({
+                    conversationId: convId,
+                    participants: [socket.user.id, toUserId],
+                    senderId: socket.user.id,
+                    senderUsername: socket.user.username,
+                    senderRole: socket.user.role,
+                    text,
+                    clientId
+                });
+            } catch (createErr) {
+                if (createErr.code === 11000 || createErr.name === 'MongoError' || createErr.name === 'MongoServerError') {
+                    msg = await DirectMessage.findOne({ clientId });
+                    if (!msg) throw createErr;
+                } else {
+                    throw createErr;
+                }
+            }
+
+            const payload = {
+                id: msg._id.toString(),
+                senderId: socket.user.id,
+                senderUsername: socket.user.username,
+                senderRole: socket.user.role,
+                text,
+                timestamp: msg.createdAt,
+                read: false,
+                clientId
+            }
+
+            io.to(`dm:${convId}`).emit('dm:message', payload);
+
+            if (typeof callback === 'function') {
+                callback({ status: 'success', id: msg._id.toString() });
+            }
+        } catch (err) {
+            if (typeof callback === 'function') {
+                callback({ error: 'Server error', status: 'failed' });
+            }
         }
-    }, 'Direct message failed to send.'));
+    }));
 
     socket.on('dm:typing:start', ({ toUserId }) => {
         const convId = [socket.user.id, toUserId].sort().join('_');
@@ -1247,30 +1540,34 @@ io.on('connection', async (socket) => {
 
     // ── Disconnect ─────────────────────────────────────────────────
     socket.on('disconnect', safeSocketHandler(socket, 'disconnect', async () => {
+        // Remove this socket from the user's active-socket set in Redis
         await redisClient.sRem(`user:sockets:${socket.user.id}`, socket.id);
         const socketCount = await redisClient.sCard(`user:sockets:${socket.user.id}`);
+
         if (socketCount === 0) {
+            // Last tab closed — the user is truly offline now
             await redisClient.sRem('users:online', socket.user.id);
             await User.findByIdAndUpdate(socket.user.id, { online: false, socketId: null });
+
+            // Only broadcast "left" notifications when the user has no remaining sessions.
+            // If they still have other tabs open, they are still present — do not notify.
+            if (socket.currentRoom) {
+                io.to(socket.currentRoom).emit('room:notification', {
+                    text: `${socket.user.username} left`,
+                    type: 'leave',
+                });
+            }
+
+            if (socket.currentVoice) {
+                io.to(`voice:${socket.currentVoice}`).emit('voice:left', {
+                    userId: socket.user.id,
+                });
+            }
         }
 
-        // Notify text channel
-        if (socket.currentRoom) {
-            io.to(socket.currentRoom).emit('room:notification', {
-                text: `${socket.user.username} left`,
-                type: 'leave',
-            });
-        }
-
-        // Notify voice channel
-        if (socket.currentVoice) {
-            io.to(`voice:${socket.currentVoice}`).emit('voice:left', {
-                userId: socket.user.id,
-            });
-        }
-
+        // Always re-broadcast the updated online list so counts stay accurate
         await broadcastUserList();
-        console.log(`[-] ${socket.user.username}`);
+        console.log(`[-] ${socket.user.username} (${socketCount} session(s) remaining)`);
     }, 'Failed to clean up disconnected user.'));
 });
 
