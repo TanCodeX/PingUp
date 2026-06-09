@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -26,7 +27,7 @@ const User = require('./models/User');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
 const DirectMessage = require('./models/DirectMessage');
-const { generateToken, socketAuthMiddleware, verifyToken } = require('./middleware/auth');
+const { generateToken, socketAuthMiddleware, verifyToken, generateRefreshToken } = require('./middleware/auth');
 const { ROLES, hasPermission } = require('./data/store'); // <-- IMPORTED WEIGHT SYSTEM
 
 const ServerSettings = require('./models/ServerSettings');
@@ -180,7 +181,7 @@ app.post('/api/register', async (req, res) => {
 
         const userCount = await User.countDocuments();
         const isFirst = userCount === 0;
-        const role = isFirst ? ROLES.OWNER : ROLES.MEMBER;
+        const role = isFirst ? ROLES.ADMIN : ROLES.MEMBER;
 
         const user = await User.create({
             username: username.trim().toLowerCase(),
@@ -191,13 +192,20 @@ app.post('/api/register', async (req, res) => {
             email: email?.trim() || '',
         });
 
-        const token = generateToken(user);
+        const accessToken = generateToken(user);
+        const refreshToken = generateRefreshToken(user);
+
+        user.refreshToken = refreshToken;
+
+        await user.save();
+
         res.status(201).json({
-            token,
-            user: user.toSafeObject(),
+            accessToken,
+            refreshToken,
+            user: user.toPrivateProfile(),
             roleMessage: isFirst
-                ? '👑 You are the ADMIN — full system control granted.'
-                : '👋 Welcome! You joined as a member.',
+                  ? '👑 You are the ADMIN — full system control granted.'
+                  : '👋 Welcome! You joined as a member.',
         });
     } catch (err) {
         console.error(err);
@@ -216,11 +224,84 @@ app.post('/api/login', async (req, res) => {
             return res.status(403).json({ error: 'You have been banned.' });
 
         user.loginCount += 1;
+
+        const accessToken = generateToken(user);
+        const refreshToken = generateRefreshToken(user);
+        user.refreshToken = refreshToken;
+
         await user.save();
-        const token = generateToken(user);
-        res.json({ token, user: user.toSafeObject() });
+
+        res.json({
+            accessToken,
+            refreshToken,
+            user: user.toPrivateProfile()
+        });
     } catch (err) {
         res.status(500).json({ error: 'Server error.' });
+    }
+});
+
+// ─── Refresh Route ────────────────────────────────────────────────
+app.post('/api/refresh', async (req, res) => {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+        return res.status(401).json({
+            error: 'Refresh token required'
+        });
+    }
+
+    try {
+        const decoded = jwt.verify(
+            refreshToken,
+            process.env.REFRESH_SECRET
+        );
+
+        const user = await User.findById(decoded.id);
+
+        if (!user || user.refreshToken !== refreshToken) {
+            return res.status(403).json({
+                error: 'Invalid refresh token'
+            });
+        }
+
+        const accessToken = generateToken(user);
+
+        res.json({ accessToken });
+
+    } catch (err) {
+        res.status(403).json({
+            error: 'Invalid or expired refresh token'
+        });
+    }
+});
+
+// ─── Logout ────────────────────────────────────────────────
+app.post('/api/logout', async (req, res) => {
+    try {
+        const { refreshToken } = req.body;
+        
+        if (!refreshToken) {
+            return res.status(400).json({
+                error: 'Refresh token required'
+            });
+        }
+
+        const user = await User.findOne({ refreshToken });
+
+        if (user) {
+            user.refreshToken = null;
+            await user.save();
+        }
+
+        res.json({
+            message: 'Logged out successfully'
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            error: 'Server error.'
+        });
     }
 });
 
@@ -326,7 +407,7 @@ app.put('/api/profile', async (req, res) => {
           runValidators: true
         });
         if (!user) return res.status(404).json({ error: 'User not found.' });
-        res.json({ user: user.toSafeObject() });
+        res.json({ user: user.toPrivateProfile() });
     }catch (err) {
         if (err?.code === 11000 && err?.keyPattern?.username) {
            return res.status(409).json({ error: 'Username already taken.' });
@@ -405,7 +486,7 @@ async function processCommand(socket, roomName, text) {
     const [cmd, ...args] = text.slice(1).split(' ');
 
     // Use the new Weight-based checker!
-    const isOwner = hasPermission(socket.user.role, ROLES.OWNER);
+    const isOwner = hasPermission(socket.user.role, ROLES.ADMIN);
     const isMod = hasPermission(socket.user.role, ROLES.MODERATOR);
     console.log(`[DEBUG] User Role: ${socket.user.role} | isOwner: ${isOwner}`);
     const ok = msg => socket.emit('command:response', { type: 'success', text: `✅ ${msg}` });
@@ -516,7 +597,7 @@ async function processCommand(socket, roomName, text) {
             if (!isMod) return perm('Moderators only.');
             const target = await User.findOne({ username: args[0], online: true });
             if (!target) return err('User not found or offline.');
-            if (target.role === ROLES.OWNER) return err('Cannot kick the admin.');
+            if (target.role === ROLES.ADMIN) return err('Cannot kick the admin.');
             if (socket.user.role === ROLES.MODERATOR && target.role !== ROLES.MEMBER)
                 return err('Moderators can only kick members.');
             const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === target._id.toString());
@@ -658,10 +739,14 @@ async function processCommand(socket, roomName, text) {
             const [targetName, newRole] = args;
             if (![ROLES.MODERATOR, ROLES.MEMBER].includes(newRole))
                 return err('Role must be: moderator or member');
-            const targetUser = await User.findOneAndUpdate(
-                { username: targetName }, { role: newRole }, { new: true }
-            );
+            // Lookup first so we can guard the target role before any write
+            // (prevents owners from demoting themselves or other owners —
+            //  matches the existing /kick, /reroll, /ban pattern).
+            const targetUser = await User.findOne({ username: targetName });
             if (!targetUser) return err('User not found.');
+            if (targetUser.role === ROLES.ADMIN)
+                return err('Cannot change the admin role.');
+            await User.updateOne({ _id: targetUser._id }, { role: newRole });
             const ls = [...io.sockets.sockets.values()].find(s => s.user?.id === targetUser._id.toString());
             if (ls) { ls.user.role = newRole; ls.emit('role:updated', { role: newRole }); }
             await broadcastUserList();
@@ -674,7 +759,7 @@ async function processCommand(socket, roomName, text) {
             if (!isOwner) return perm('Admin only.');
             const target = await User.findOne({ username: args[0] });
             if (!target) return err('User not found.');
-            if (target.role === ROLES.OWNER) return err('Cannot ban the admin.');
+            if (target.role === ROLES.ADMIN) return err('Cannot ban the admin.');
             target.banned = true;
             await target.save();
             const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === target._id.toString());
@@ -688,7 +773,7 @@ async function processCommand(socket, roomName, text) {
             if (!isOwner) return perm('Admin only.');
             const target = await User.findOne({ username: args[0] });
             if (!target) return err('User not found.');
-            if (target.role === ROLES.OWNER) return err('Cannot reroll the admin.');
+            if (target.role === ROLES.ADMIN) return err('Cannot reroll the admin.');
             const newRole = rollRole();
             target.role = newRole;
             await target.save();
@@ -881,7 +966,7 @@ io.on('connection', async (socket) => {
                 const freshUser = await User.findById(socket.user.id);
 
                 // Check using new weight permissions
-                if (room.isReadOnly && !hasPermission(freshUser.role, ROLES.OWNER))
+                if (room.isReadOnly && !hasPermission(freshUser.role, ROLES.ADMIN))
                     return socket.emit('error:permission', `#${room.name} is read-only.`);
                 if (room.isLocked)
                     return socket.emit('error:permission', `#${room.name} is locked.`);
@@ -891,7 +976,7 @@ io.on('connection', async (socket) => {
                     return socket.emit('error:permission', 'You cannot send messages.');
 
                 const msgId = new mongoose.Types.ObjectId();
-                
+
                 await messageQueue.add('send-message', {
                     _id: msgId,
                     roomName: resolvedRoom,
@@ -1188,7 +1273,6 @@ replyCount: 0, imageUrl: imageUrl || null,
                 })
                     .sort({ createdAt: 1 })
                     .lean();
-
                 socket.emit('thread:history', {
                     parentMessageId,
                     replies: replies.map((m) => ({
@@ -1207,7 +1291,6 @@ replyCount: 0, imageUrl: imageUrl || null,
             }
         )
     );
-
     // ── Emoji Reactions ───────────────────────────────────────────
     socket.on(
         'message:reaction',
@@ -1319,7 +1402,7 @@ replyCount: 0, imageUrl: imageUrl || null,
             return socket.emit('error:permission', 'Owner only.');
         if (!['member', 'moderator'].includes(role)) return;
         const target = await User.findById(targetId);
-        if (!target || target.role === ROLES.OWNER) return;
+        if (!target || target.role === ROLES.ADMIN) return;
         target.role = role;
         await target.save();
         const ls = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
@@ -1332,7 +1415,7 @@ replyCount: 0, imageUrl: imageUrl || null,
         if (!['owner', 'moderator'].includes(socket.user.role))
             return socket.emit('error:permission', 'Insufficient permissions.');
         const target = await User.findById(targetId);
-        if (!target || target.role === ROLES.OWNER) return;
+        if (!target || target.role === ROLES.ADMIN) return;
         const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
         if (ts) { ts.emit('kicked', { by: socket.user.username }); ts.disconnect(true); }
         io.emit('room:notification', { text: `👢 ${target.username} kicked`, type: 'system' });
@@ -1342,7 +1425,7 @@ replyCount: 0, imageUrl: imageUrl || null,
         if (socket.user.role !== 'owner')
             return socket.emit('error:permission', 'Owner only.');
         const target = await User.findById(targetId);
-        if (!target || target.role === ROLES.OWNER) return;
+        if (!target || target.role === ROLES.ADMIN) return;
         target.banned = true;
         await target.save();
         const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
@@ -1389,43 +1472,63 @@ replyCount: 0, imageUrl: imageUrl || null,
         if (otherSocket) otherSocket.emit('dm:read', { conversationId: convId });
     }, 'Failed to open direct message.'));
 
-    socket.on('dm:send', safeSocketHandler(socket, 'dm:send', async ({ toUserId, text }) => {
-        const trimmed = text?.trim();
-        if (!trimmed) return;
-        const toUser = await User.findById(toUserId);
-        if (!toUser) return socket.emit('error:general', 'User not found.');
-        const convId = [socket.user.id, toUserId].sort().join('_');
-        const freshUser = await User.findById(socket.user.id);
-        const msg = await DirectMessage.create({
-            conversationId: convId,
-            participants: [socket.user.id, toUserId],
-            senderId: socket.user.id,
-            senderUsername: socket.user.username,
-            senderRole: freshUser.role,
-            text: trimmed,
-            read: false,
-        });
-        const payload = {
-            id: msg._id.toString(),
-            conversationId: convId,
-            senderId: socket.user.id,
-            senderUsername: socket.user.username,
-            senderRole: freshUser.role,
-            text: trimmed,
-            timestamp: msg.createdAt,
-            read: false,
-        };
-        io.to(`dm:${convId}`).emit('dm:message', payload);
-        const rs = [...io.sockets.sockets.values()].find(s => s.user?.id === toUserId);
-        if (rs && rs.currentDM !== convId) {
-            rs.emit('dm:notification', {
-                from: socket.user.username,
-                fromId: socket.user.id,
-                conversationId: convId,
-                preview: trimmed.slice(0, 60),
-            });
+    socket.on('dm:send', safeSocketHandler(socket, 'dm:send', async ({ toUserId, text, clientId }, callback) => {
+        try {
+            if (clientId) {
+                const existingMsg = await DirectMessage.findOne({ clientId });
+
+                if (existingMsg) {
+                    if (typeof callback == 'function') {
+                        return callback({ status: 'success', id: existingMsg._id.toString() });
+                    }
+                    return;
+                }
+            }
+
+            const convId = [toUserId, socket.user.id].sort().join('_');
+
+            let msg;
+            try {
+                msg = await DirectMessage.create({
+                    conversationId: convId,
+                    participants: [socket.user.id, toUserId],
+                    senderId: socket.user.id,
+                    senderUsername: socket.user.username,
+                    senderRole: socket.user.role,
+                    text,
+                    clientId
+                });
+            } catch (createErr) {
+                if (createErr.code === 11000 || createErr.name === 'MongoError' || createErr.name === 'MongoServerError') {
+                    msg = await DirectMessage.findOne({ clientId });
+                    if (!msg) throw createErr;
+                } else {
+                    throw createErr;
+                }
+            }
+
+            const payload = {
+                id: msg._id.toString(),
+                senderId: socket.user.id,
+                senderUsername: socket.user.username,
+                senderRole: socket.user.role,
+                text,
+                timestamp: msg.createdAt,
+                read: false,
+                clientId
+            }
+
+            io.to(`dm:${convId}`).emit('dm:message', payload);
+
+            if (typeof callback === 'function') {
+                callback({ status: 'success', id: msg._id.toString() });
+            }
+        } catch (err) {
+            if (typeof callback === 'function') {
+                callback({ error: 'Server error', status: 'failed' });
+            }
         }
-    }, 'Direct message failed to send.'));
+    }));
 
     socket.on('dm:typing:start', ({ toUserId }) => {
         const convId = [socket.user.id, toUserId].sort().join('_');
@@ -1438,30 +1541,34 @@ replyCount: 0, imageUrl: imageUrl || null,
 
     // ── Disconnect ─────────────────────────────────────────────────
     socket.on('disconnect', safeSocketHandler(socket, 'disconnect', async () => {
+        // Remove this socket from the user's active-socket set in Redis
         await redisClient.sRem(`user:sockets:${socket.user.id}`, socket.id);
         const socketCount = await redisClient.sCard(`user:sockets:${socket.user.id}`);
+
         if (socketCount === 0) {
+            // Last tab closed — the user is truly offline now
             await redisClient.sRem('users:online', socket.user.id);
             await User.findByIdAndUpdate(socket.user.id, { online: false, socketId: null });
+
+            // Only broadcast "left" notifications when the user has no remaining sessions.
+            // If they still have other tabs open, they are still present — do not notify.
+            if (socket.currentRoom) {
+                io.to(socket.currentRoom).emit('room:notification', {
+                    text: `${socket.user.username} left`,
+                    type: 'leave',
+                });
+            }
+
+            if (socket.currentVoice) {
+                io.to(`voice:${socket.currentVoice}`).emit('voice:left', {
+                    userId: socket.user.id,
+                });
+            }
         }
 
-        // Notify text channel
-        if (socket.currentRoom) {
-            io.to(socket.currentRoom).emit('room:notification', {
-                text: `${socket.user.username} left`,
-                type: 'leave',
-            });
-        }
-
-        // Notify voice channel
-        if (socket.currentVoice) {
-            io.to(`voice:${socket.currentVoice}`).emit('voice:left', {
-                userId: socket.user.id,
-            });
-        }
-
+        // Always re-broadcast the updated online list so counts stay accurate
         await broadcastUserList();
-        console.log(`[-] ${socket.user.username}`);
+        console.log(`[-] ${socket.user.username} (${socketCount} session(s) remaining)`);
     }, 'Failed to clean up disconnected user.'));
 });
 
