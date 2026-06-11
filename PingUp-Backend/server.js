@@ -442,8 +442,8 @@ async function processCommand(socket, roomName, text) {
             if (target.role === ROLES.OWNER) return err('Cannot kick the admin.');
             if (socket.user.role === ROLES.MODERATOR && target.role !== ROLES.MEMBER)
                 return err('Moderators can only kick members.');
-            const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === target._id.toString());
-            if (ts) { ts.emit('kicked', { by: socket.user.username }); ts.disconnect(true); }
+            const targetSockets = [...io.sockets.sockets.values()].filter(s => s.user?.id === target._id.toString());
+            for (const ts of targetSockets) { ts.emit('kicked', { by: socket.user.username }); ts.disconnect(true); }
             ok(`${args[0]} kicked.`);
             io.emit('room:notification', { text: `👢 ${args[0]} was kicked`, type: 'system' });
             break;
@@ -585,8 +585,8 @@ async function processCommand(socket, roomName, text) {
                 { username: targetName }, { role: newRole }, { new: true }
             );
             if (!targetUser) return err('User not found.');
-            const ls = [...io.sockets.sockets.values()].find(s => s.user?.id === targetUser._id.toString());
-            if (ls) { ls.user.role = newRole; ls.emit('role:updated', { role: newRole }); }
+            const targetSockets = [...io.sockets.sockets.values()].filter(s => s.user?.id === targetUser._id.toString());
+            for (const ls of targetSockets) { ls.user.role = newRole; ls.emit('role:updated', { role: newRole }); }
             await broadcastUserList();
             ok(`${targetName} is now ${newRole}.`);
             io.emit('room:notification', { text: `🔰 ${targetName} → ${newRole}`, type: 'system' });
@@ -600,8 +600,8 @@ async function processCommand(socket, roomName, text) {
             if (target.role === ROLES.OWNER) return err('Cannot ban the admin.');
             target.banned = true;
             await target.save();
-            const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === target._id.toString());
-            if (ts) { ts.emit('kicked', { by: `${socket.user.username} (banned)` }); ts.disconnect(true); }
+            const targetSockets = [...io.sockets.sockets.values()].filter(s => s.user?.id === target._id.toString());
+            for (const ts of targetSockets) { ts.emit('kicked', { by: `${socket.user.username} (banned)` }); ts.disconnect(true); }
             ok(`${args[0]} banned.`);
             io.emit('room:notification', { text: `🔨 ${args[0]} was banned`, type: 'system' });
             break;
@@ -615,8 +615,8 @@ async function processCommand(socket, roomName, text) {
             const newRole = rollRole();
             target.role = newRole;
             await target.save();
-            const ls = [...io.sockets.sockets.values()].find(s => s.user?.id === target._id.toString());
-            if (ls) { ls.user.role = newRole; ls.emit('role:updated', { role: newRole }); }
+            const targetSockets = [...io.sockets.sockets.values()].filter(s => s.user?.id === target._id.toString());
+            for (const ls of targetSockets) { ls.user.role = newRole; ls.emit('role:updated', { role: newRole }); }
             await broadcastUserList();
             ok(`🎲 ${args[0]} rerolled → ${newRole.toUpperCase()}`);
             io.emit('room:notification', { text: `🎲 ${args[0]}'s role rerolled to ${newRole}`, type: 'system' });
@@ -1175,8 +1175,8 @@ io.on('connection', async (socket) => {
         if (!target || target.role === ROLES.OWNER) return;
         target.role = role;
         await target.save();
-        const ls = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
-        if (ls) { ls.user.role = role; ls.emit('role:updated', { role }); }
+        const targetSockets = [...io.sockets.sockets.values()].filter(s => s.user?.id === targetId);
+        for (const ls of targetSockets) { ls.user.role = role; ls.emit('role:updated', { role }); }
         await broadcastUserList();
         io.emit('room:notification', { text: `🔰 ${target.username} → ${role}`, type: 'system' });
     }, 'Failed to update user role.'));
@@ -1186,8 +1186,8 @@ io.on('connection', async (socket) => {
             return socket.emit('error:permission', 'Insufficient permissions.');
         const target = await User.findById(targetId);
         if (!target || target.role === ROLES.OWNER) return;
-        const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
-        if (ts) { ts.emit('kicked', { by: socket.user.username }); ts.disconnect(true); }
+        const targetSockets = [...io.sockets.sockets.values()].filter(s => s.user?.id === targetId);
+        for (const ts of targetSockets) { ts.emit('kicked', { by: socket.user.username }); ts.disconnect(true); }
         io.emit('room:notification', { text: `👢 ${target.username} kicked`, type: 'system' });
     }, 'Failed to kick user.'));
 
@@ -1198,8 +1198,8 @@ io.on('connection', async (socket) => {
         if (!target || target.role === ROLES.OWNER) return;
         target.banned = true;
         await target.save();
-        const ts = [...io.sockets.sockets.values()].find(s => s.user?.id === targetId);
-        if (ts) { ts.emit('kicked', { by: `${socket.user.username} (banned)` }); ts.disconnect(true); }
+        const targetSockets = [...io.sockets.sockets.values()].filter(s => s.user?.id === targetId);
+        for (const ts of targetSockets) { ts.emit('kicked', { by: `${socket.user.username} (banned)` }); ts.disconnect(true); }
         io.emit('room:notification', { text: `🔨 ${target.username} banned`, type: 'system' });
     }, 'Failed to ban user.'));
 
