@@ -1163,13 +1163,21 @@ replyCount: 0, imageUrl: imageUrl || null,
                 'Owner only.'
               );
       
-            const room = await Room.findById(channelId);
+              const room = await Room.findById(channelId);
       
-            if (!room) return;
-      
-            room.slowModeSeconds = seconds;
-      
-            await room.save();
+              if (!room) return;
+        
+              const numSeconds = Number(seconds);
+              if (Number.isNaN(numSeconds) || numSeconds < 0) {
+                return socket.emit(
+                  'error:general',
+                  'Slow mode seconds must be a non-negative number.'
+                );
+              }
+        
+              room.slowModeSeconds = numSeconds;
+        
+              await room.save();
       
             await broadcastStructure();
       

@@ -209,12 +209,12 @@ export default function MessageList({
         </div>
       )}
       <div className="msg-pinned-toolbar">
-  <button
+      <button
     className="msg-pinned-toggle-btn"
-    onClick={() => setShowPinnedSidebar(true)}
+    onClick={() => setShowPinnedSidebar(v => !v)}
   >
-    📌 Pinned ({pinnedMessages.length})
-  </button>
+     📌 Pinned ({pinnedMessages.length})
+   </button>
 </div>
       {/* ── Pinned messages banner ── */}
       {/* {pinnedMessages.length > 0 && (
