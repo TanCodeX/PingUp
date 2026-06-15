@@ -18,7 +18,35 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname)),
 });
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
+
+/**
+ * Filter uploaded files based on MIME type and file extension.
+ * 
+ * Non-obvious decisions:
+ * 1. Double validation: checks both content-type (mimetype) and file extension to mitigate
+ *    malicious extension renaming bypasses (e.g. uploading .html disguised as .png).
+ * 2. Whitelist approach: restricts uploads strictly to safe image assets (JPEG, PNG, GIF, WEBP)
+ *    to prevent Cross-Site Scripting (XSS) via HTML uploads or Remote Code Execution (RCE) in public static directories.
+ */
+const fileFilter = (req, file, cb) => {
+  const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+
+  const isMimeAllowed = allowedMimeTypes.includes(file.mimetype);
+  const isExtensionAllowed = allowedExtensions.includes(path.extname(file.originalname).toLowerCase());
+
+  if (isMimeAllowed && isExtensionAllowed) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only JPEG, PNG, GIF, and WEBP images are allowed.'), false);
+  }
+};
+
+const upload = multer({ 
+  storage, 
+  fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
 
 const { pubClient, subClient, redisClient, redisReady } = require('./config/redis');
 const { messageQueue } = require('./services/messageQueue');
@@ -27,7 +55,7 @@ const User = require('./models/User');
 const Room = require('./models/Room');
 const Message = require('./models/Message');
 const DirectMessage = require('./models/DirectMessage');
-const { generateToken, socketAuthMiddleware, verifyToken, generateRefreshToken, verifyRefreshToken } = require('./middleware/auth');
+const { generateToken, socketAuthMiddleware, verifyToken, generateRefreshToken, verifyRefreshToken, requireAuth } = require('./middleware/auth');
 const { ROLES, hasPermission } = require('./data/store'); // <-- IMPORTED WEIGHT SYSTEM
 
 const ServerSettings = require('./models/ServerSettings');
@@ -61,10 +89,23 @@ app.use(express.json());
 app.use('/uploads', express.static(uploadDir));
 
 // Image upload route
-app.post('/api/upload', verifyToken, upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const imageUrl = `/uploads/${req.file.filename}`;
-  res.json({ imageUrl });
+app.post('/api/upload', requireAuth, (req, res, next) => {
+  upload.single('image')(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      // Multer specific errors (e.g. file size limit exceeded)
+      return res.status(400).json({ error: `Upload error: ${err.message}` });
+    } else if (err) {
+      // Custom fileFilter rejection error or other unknown errors
+      return res.status(400).json({ error: err.message });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const imageUrl = `/uploads/${req.file.filename}`;
+    res.json({ imageUrl });
+  });
 });
 
 
@@ -1579,13 +1620,17 @@ io.on('connection', async (socket) => {
 });
 
 // ─── Connect & Start ──────────────────────────────────────────────
-mongoose.connect(process.env.MONGO_URI)
-    .then(async () => {
-        console.log('✅ MongoDB connected');
-        await redisReady;
-        await seedRooms();
-        server.listen(process.env.PORT || 3001, () =>
-            console.log(`🚀 Server on http://localhost:${process.env.PORT || 3001}`)
-        );
-    })
-    .catch(err => { console.error('MongoDB error:', err); process.exit(1); });
+if (require.main === module) {
+    mongoose.connect(process.env.MONGO_URI)
+        .then(async () => {
+            console.log('✅ MongoDB connected');
+            await redisReady;
+            await seedRooms();
+            server.listen(process.env.PORT || 3001, () =>
+                console.log(`🚀 Server on http://localhost:${process.env.PORT || 3001}`)
+            );
+        })
+        .catch(err => { console.error('MongoDB error:', err); process.exit(1); });
+}
+
+module.exports = { app, server };
