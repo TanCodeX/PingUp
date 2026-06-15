@@ -426,6 +426,22 @@ const [threadReplies, setThreadReplies] = useState([]);
                   title="Toggle private"
                   onClick={() => socketRef.current?.emit('channel:togglePrivate', { channelId: activeChannel.id })}
                 >👁️</button>
+                <select
+  className="hdr-slowmode-select"
+  value={roomSettings?.slowModeSeconds || 0}
+  onChange={(e) =>
+    socketRef.current?.emit('channel:setSlowMode', {
+      channelId: activeChannel.id,
+      seconds: Number(e.target.value),
+    })
+  }
+>
+  <option value={0}>Off</option>
+  <option value={5}>5s</option>
+  <option value={10}>10s</option>
+  <option value={30}>30s</option>
+  <option value={60}>60s</option>
+</select>
                 <button
                   className="hdr-admin-btn hdr-btn-danger"
                   title="Delete channel"

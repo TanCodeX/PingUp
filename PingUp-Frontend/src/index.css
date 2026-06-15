@@ -7516,3 +7516,16 @@ body {
   padding: 4px 8px;
   cursor: pointer;
 }
+
+.badge-slowmode {
+  background: rgba(255, 193, 7, 0.15);
+  color: #ffc107;
+  border: 1px solid rgba(255, 193, 7, 0.35);
+}
+
+.hdr-slowmode-select,
+.dm-ch-slowmode-select {
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+}

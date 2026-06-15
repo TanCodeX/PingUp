@@ -130,10 +130,15 @@ function roomToChannel(r) {
         description: r.description,
         emoji: r.emoji || '💬',
         category: r.category,
+    
         isPrivate: r.isPrivate || false,
         isReadOnly: r.isReadOnly || false,
         isLocked: r.isLocked || false,
+    
+        slowModeSeconds: r.slowModeSeconds || 0,
+    
         isVoice: r.isVoice || false,
+    
         allowedUsers: r.allowedUsers?.map(id => id.toString()) || [],
         pinnedMessages: r.pinnedMessages?.map(id => id.toString()) || [],
     };
@@ -693,6 +698,46 @@ async function processCommand(socket, roomName, text) {
             ok(`#${room.name} is now ${room.isLocked ? 'locked 🔒' : 'unlocked 🔓'}.`);
             break;
         }
+        case 'slowmode': {
+
+            if (!isOwner)
+              return perm('Owner only.');
+          
+            const room = await Room.findOne({
+              name: args[0]?.toLowerCase()
+            });
+          
+            if (!room)
+              return err(`#${args[0]} not found.`);
+          
+            const seconds = Number(args[1]);
+          
+            if (
+              Number.isNaN(seconds) ||
+              seconds < 0
+            ) {
+              return err(
+                'Usage: /slowmode <channel> <seconds>'
+              );
+            }
+          
+            room.slowModeSeconds = seconds;
+          
+            await room.save();
+          
+            await broadcastStructure();
+          
+            io.to(room.name).emit(
+              'room:settings',
+              roomToChannel(room)
+            );
+          
+            ok(
+              `Slow mode for #${room.name} set to ${seconds}s.`
+            );
+          
+            break;
+          }
 
         case 'private': {
             if (!isOwner) return perm('Admin only.');
@@ -972,6 +1017,32 @@ io.on('connection', async (socket) => {
                 if (room.isLocked)
                     return socket.emit('error:permission', `#${room.name} is locked.`);
 
+                if (
+                    room.slowModeSeconds > 0 &&
+                    !hasPermission(freshUser.role, ROLES.MODERATOR)
+                  ) {
+                    const lastMessage = await Message.findOne({
+                      roomName: resolvedRoom,
+                      userId: socket.user.id,
+                      deleted: { $ne: true },
+                    }).sort({ createdAt: -1 });
+                  
+                    if (lastMessage) {
+                      const secondsSinceLastMessage =
+                        (Date.now() - new Date(lastMessage.createdAt).getTime()) / 1000;
+                  
+                      if (secondsSinceLastMessage < room.slowModeSeconds) {
+                        const remaining = Math.ceil(
+                          room.slowModeSeconds - secondsSinceLastMessage
+                        );
+                  
+                        return socket.emit(
+                          'error:permission',
+                          `Slow mode enabled. Please wait ${remaining} seconds.`
+                        );
+                      }
+                    }
+                  }
                 // All base users are at least Members, so they can send.
                 if (!hasPermission(freshUser.role, ROLES.MEMBER))
                     return socket.emit('error:permission', 'You cannot send messages.');
@@ -1084,6 +1155,57 @@ io.on('connection', async (socket) => {
             text: `✅ #${room.name} is now ${room.isReadOnly ? 'read-only 🔇' : 'writable ✍️'}`,
         });
     }, 'Failed to update channel settings.'));
+
+    socket.on(
+        'channel:setSlowMode',
+        safeSocketHandler(
+          socket,
+          'channel:setSlowMode',
+          async ({ channelId, seconds }) => {
+      
+            if (socket.user.role !== 'owner')
+              return socket.emit(
+                'error:permission',
+                'Owner only.'
+              );
+      
+              const room = await Room.findById(channelId);
+      
+              if (!room) return;
+        
+              const numSeconds = Number(seconds);
+              if (Number.isNaN(numSeconds) || numSeconds < 0) {
+                return socket.emit(
+                  'error:general',
+                  'Slow mode seconds must be a non-negative number.'
+                );
+              }
+        
+              room.slowModeSeconds = numSeconds;
+        
+              await room.save();
+      
+            await broadcastStructure();
+      
+            io.to(room.name).emit(
+              'room:settings',
+              roomToChannel(room)
+            );
+      
+            io.to(channelId).emit(
+              'room:settings',
+              roomToChannel(room)
+            );
+      
+            socket.emit('command:response', {
+              type: 'success',
+              text: `✅ Slow mode set to ${seconds}s in #${room.name}`,
+            });
+      
+          },
+          'Failed to update slow mode.'
+        )
+      );
 
     socket.on('channel:toggleLock', safeSocketHandler(socket, 'channel:toggleLock', async ({ channelId }) => {
         if (socket.user.role !== 'owner')

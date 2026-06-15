@@ -299,6 +299,25 @@ useEffect(() => {
                         socket?.emit('channel:togglePrivate', { channelId: ch.id });
                       }}
                     >👁️</button>
+                    <select
+                      className="dm-ch-slowmode-select"
+                      value={ch.slowModeSeconds || 0}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        e.stopPropagation();
+
+                        socket?.emit('channel:setSlowMode', {
+                          channelId: ch.id,
+                          seconds: Number(e.target.value),
+                        });
+                      }}
+                    >
+                      <option value={0}>Off</option>
+                      <option value={5}>5s</option>
+                      <option value={10}>10s</option>
+                      <option value={30}>30s</option>
+                      <option value={60}>60s</option>
+                    </select>
                     <button
                       className="dm-ch-del-btn"
                       title="Delete channel"
