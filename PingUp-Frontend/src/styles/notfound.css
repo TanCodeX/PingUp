@@ -4,8 +4,8 @@
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  background: radial-gradient(circle at top, #1e293b, #0f172a);
-  color: white;
+  background: radial-gradient(circle at top, #1e2f26, #1a2a22);
+  color: #e8f0ec;
   text-align: center;
   padding: 20px;
 }
@@ -14,8 +14,8 @@
 .notfound-code {
   font-size: 6rem;
   font-weight: bold;
-  color: #ef4444;
-  text-shadow: 0 0 25px rgba(239, 68, 68, 0.4);
+  color: #4a9e8e;
+  text-shadow: 0 0 25px rgba(74, 158, 142, 0.4);
   animation: pulse404 2s ease-in-out infinite;
 }
 
@@ -36,10 +36,11 @@
 .notfound-title {
   font-size: 2rem;
   margin: 10px 0;
+  color: #e8f0ec;
 }
 
 .notfound-text {
-  opacity: 0.8;
+  color: #7a9e8a;
   margin-bottom: 20px;
 }
 
@@ -70,11 +71,21 @@
 }
 
 .notfound-btn-primary {
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
-  color: white;
+  background: #4a9e8e;
+  color: #1a2a22;
+  font-weight: 500;
+}
+
+.notfound-btn-primary:hover {
+  background: #5ab5a4;
 }
 
 .notfound-btn-secondary {
-  background: linear-gradient(135deg, #334155, #1f2937);
-  color: white;
+  background: #243322;
+  color: #e8f0ec;
+  border: 1px solid #7a9e8a33;
 }
+
+.notfound-btn-secondary:hover {
+  background: #1e2f26;
+}

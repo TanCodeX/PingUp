@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import { getSocket, disconnectSocket } from './socket';
 import Login        from './components/Login';
 import Register     from './components/Register';
@@ -12,12 +13,20 @@ import DMChat       from './components/DMChat';
 import DMList       from './components/DMList';
 import AdminPanel   from './components/AdminPanel';
 import VoiceChannel from './components/VoiceChannel';
+import NotFound     from './pages/NotFound';
 
 // Channel names that render as the music/voice player instead of a text chat
 const VOICE_CHANNELS = ['music-lounge'];
 
 export default function App() {
-  const [authPage,     setAuthPage]     = useState('login');
+  const location = useLocation();
+  const validPaths = ['/', '/index.html', '/login', '/register'];
+  const normalizedPath = location.pathname.replace(/\/+$/, '') || '/';
+  const isNotFound = !validPaths.includes(normalizedPath);
+
+  const [authPage,     setAuthPage]     = useState(() => {
+    return normalizedPath === '/register' ? 'register' : 'login';
+  });
   const [currentUser,  setCurrentUser]  = useState(() => {
     const u = localStorage.getItem('user');
     return u ? JSON.parse(u) : null;
@@ -49,6 +58,11 @@ const [threadReplies, setThreadReplies] = useState([]);
 
   const [socketInstance, setSocketInstance] = useState(null);
   const socketRef = useRef(null);
+  const activeChannelRef = useRef(activeChannel);
+
+  useEffect(() => {
+    activeChannelRef.current = activeChannel;
+  }, [activeChannel]);
 
   const isVoiceChannel = activeChannel && VOICE_CHANNELS.includes(activeChannel.name);
   const isOwner        = currentUser?.role === 'owner';
@@ -222,10 +236,6 @@ const [threadReplies, setThreadReplies] = useState([]);
       alert(`You were kicked by ${by}.`);
       handleLogout();
     });
-    const activeChannelRef = useRef(activeChannel);
-    useEffect(() => {
-        activeChannelRef.current = activeChannel;
-    }, [activeChannel]);
     socket.on('channel:kicked', ({ channelId, reason }) => {
       if (activeChannelRef.current?.id === channelId) {
         setActiveChannel(null);
@@ -326,6 +336,11 @@ const [threadReplies, setThreadReplies] = useState([]);
     setShowAdmin(false);
     socketRef.current?.emit('dm:join', { otherUserId: user.id });
     setDmNotifs(prev => prev.filter(n => n.fromId !== user.id));
+  }
+
+  // ── 404 Not Found fallback ─────────────────────────────────────
+  if (isNotFound) {
+    return <NotFound />;
   }
 
   // ── Not logged in ──────────────────────────────────────────────

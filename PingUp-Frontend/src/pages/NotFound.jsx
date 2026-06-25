@@ -1,8 +1,10 @@
-import { Link } from "react-router-dom";
-import { Home } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Home, ArrowLeft } from "lucide-react";
 import "../styles/notfound.css";
 
 export default function NotFound() {
+  const navigate = useNavigate();
+
   return (
     <div className="notfound-container">
       <div className="notfound-code">404</div>
@@ -14,6 +16,10 @@ export default function NotFound() {
       </p>
 
       <div className="notfound-actions">
+        <button onClick={() => navigate(-1)} className="notfound-btn notfound-btn-secondary">
+          <ArrowLeft size={18} />
+          Go Back
+        </button>
         <Link to="/" className="notfound-btn notfound-btn-primary">
           <Home size={18} />
           Go Home
