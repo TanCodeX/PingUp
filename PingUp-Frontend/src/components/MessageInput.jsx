@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import './MessageInput.css';
+import '../styles/MessageInput.css';
+import { getApiUrl } from '../api';
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
@@ -95,7 +96,7 @@ export default function MessageInput({
       if (uploading || (!text.trim() && !imageFile) || isDisabled) return;
       handleSend();
     }
-  }, [text, isDisabled, imageFile, uploading, handleSend]);
+  }, [text, isDisabled, imageFile, uploading, token]);
 
   const handleChange = useCallback((e) => {
     setText(e.target.value);
