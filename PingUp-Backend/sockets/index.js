@@ -1,6 +1,6 @@
 const { socketAuthMiddleware } = require('../middleware/auth');
 const User = require('../models/User');
-const { redisClient } = require('../config/redis');
+const { addOnlineUser, removeOnlineUser } = require('../services/redis');
 const { setupHandlers } = require('./handlers');
 const { broadcastUserList, broadcastStructure, getServerSetting, safeSocketHandler } = require('../utils/helpers');
 
@@ -20,8 +20,7 @@ function initializeSockets(io) {
             socket.user.role = dbUser.role;
             socket.data.user = socket.user;
             
-            await redisClient.sAdd(`user:sockets:${socket.user.id}`, socket.id);
-            await redisClient.sAdd('users:online', socket.user.id);
+            await addOnlineUser(socket.user.id, socket.id);
             await User.findByIdAndUpdate(socket.user.id, { online: true, socketId: socket.id });
             await broadcastUserList(io);
 
@@ -32,6 +31,16 @@ function initializeSockets(io) {
             console.log(`[+] ${socket.user.username} (${socket.user.role})`);
         }catch(err){
             console.error('[connection] setup error:', err);
+            try {
+                if (socket.user && socket.user.id) {
+                    const socketCount = await removeOnlineUser(socket.user.id, socket.id);
+                    if (socketCount === 0) {
+                        await User.findByIdAndUpdate(socket.user.id, { online: false, socketId: null });
+                    }
+                }
+            } catch (cleanupErr) {
+                console.error('[connection] cleanup error:', cleanupErr);
+            }
             socket.emit('error:general', 'Connection setup failed.');
             socket.disconnect();
             return;
@@ -40,11 +49,9 @@ function initializeSockets(io) {
         setupHandlers(io, socket);
 
         socket.on('disconnect', safeSocketHandler(socket, 'disconnect', async () => {
-            await redisClient.sRem(`user:sockets:${socket.user.id}`, socket.id);
-            const socketCount = await redisClient.sCard(`user:sockets:${socket.user.id}`);
+            const socketCount = await removeOnlineUser(socket.user.id, socket.id);
 
             if (socketCount === 0) {
-                await redisClient.sRem('users:online', socket.user.id);
                 await User.findByIdAndUpdate(socket.user.id, { online: false, socketId: null });
 
                 if (socket.currentRoom) {

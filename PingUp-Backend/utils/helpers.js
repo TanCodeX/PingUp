@@ -3,7 +3,7 @@ const User = require('../models/User');
 const Room = require('../models/Room');
 const ServerSettings = require('../models/ServerSettings');
 const { verifyToken } = require('../middleware/auth');
-const { redisClient } = require('../config/redis');
+const { getOnlineUserIds } = require('../services/redis');
 
 function rollRole() {
     return Math.random() < 0.30 ? ROLES.MODERATOR : ROLES.MEMBER;
@@ -21,7 +21,7 @@ function safeSocketHandler(socket, eventName, handler, clientMessage = 'Somethin
 }
 
 async function broadcastUserList(io) {
-    const onlineUserIds = await redisClient.sMembers('users:online');
+    const onlineUserIds = await getOnlineUserIds();
     if (onlineUserIds.length === 0) {
         io.emit('users:update', []);
         return;
@@ -54,7 +54,7 @@ async function evictUnauthorizedSockets(io, room) {
     for (const s of allSockets) {
         const user = s.data?.user ?? s.user;
         const isOwnerOrAdmin =
-            user?.role === ROLES.OWNER || user?.role === ROLES.ADMIN;
+            user?.role === ROLES.OWNER || user?.role === ROLES.ADMIN || user?.role === ROLES.MODERATOR;
         if (isOwnerOrAdmin) continue;
 
         const isAllowed = allowedSet.has(user?.id?.toString());
@@ -71,14 +71,27 @@ async function evictUnauthorizedSockets(io, room) {
 
 async function broadcastStructure(io) {
     const rooms = await Room.find().sort({ category: 1, order: 1, createdAt: 1 });
-    const categoryMap = new Map();
-    for (const r of rooms) {
-        const catKey = r.category || 'general';
-        if (!categoryMap.has(catKey))
-            categoryMap.set(catKey, { id: `cat-${catKey}`, name: catKey, channels: [] });
-        categoryMap.get(catKey).channels.push(roomToChannel(r));
+    const sockets = await io.fetchSockets();
+
+    for (const s of sockets) {
+        const user = s.data?.user ?? s.user;
+        if (!user) continue;
+
+        const categoryMap = new Map();
+        for (const r of rooms) {
+            if (r.isPrivate) {
+                const isModOrOwner = user.role === ROLES.ADMIN || user.role === ROLES.OWNER || user.role === ROLES.MODERATOR;
+                const isAllowedUser = r.allowedUsers?.some(id => id.toString() === user.id?.toString());
+                if (!isModOrOwner && !isAllowedUser) continue;
+            }
+
+            const catKey = r.category || 'general';
+            if (!categoryMap.has(catKey))
+                categoryMap.set(catKey, { id: `cat-${catKey}`, name: catKey, channels: [] });
+            categoryMap.get(catKey).channels.push(roomToChannel(r));
+        }
+        s.emit('structure:update', [...categoryMap.values()]);
     }
-    io.emit('structure:update', [...categoryMap.values()]);
 }
 
 async function getServerSetting(key, defaultValue) {
