@@ -100,7 +100,7 @@ export default function MessageInput({
 
     // Restore focus after sending (auto-focus feature)
     setTimeout(() => inputRef.current?.focus(), 0);
-  }, [text, imageFile, onSend, onTypingStop, clearDraft]);
+  }, [text, imageFile, onSend, onTypingStop, clearDraft, token]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -108,7 +108,7 @@ export default function MessageInput({
       if (uploading || (!text.trim() && !imageFile) || isDisabled) return;
       handleSend();
     }
-  }, [text, isDisabled, imageFile, uploading, token]);
+  }, [text, isDisabled, imageFile, uploading, handleSend]);
 
   const handleChange = useCallback((e) => {
     const newText = e.target.value;
