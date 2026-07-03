@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, } from 'react';
 import { getApiUrl } from '../api';
 import { useDraftMessage } from '../hooks/useDraftMessage';
+import MarkdownMessage from './MarkdownMessage';
 
 // Generate a temporary client-side ID for optimistic message rendering
 function generateClientId() {
@@ -43,13 +44,17 @@ export default function DMChat({ currentUser, otherUser, token, socket, onClose 
   useEffect(() => {
     if (!currentUserId || !otherUserId || !token) return;
     const conversationId = [currentUserId, otherUserId].sort().join('_');
+    const controller = new AbortController();
 
     fetch(getApiUrl(`/api/dm/${otherUserId}`), {
       headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
     })
       .then(r => r.json())
       .then(data => setMessages(Array.isArray(data) ? data : []))
-      .catch(() => { });
+      .catch(err => {
+        if (err.name !== 'AbortError') console.error('Failed to load DM history:', err);
+      });
 
     socket.emit('dm:join', { otherUserId });
 
@@ -66,9 +71,11 @@ export default function DMChat({ currentUser, otherUser, token, socket, onClose 
     const onTyping = ({ username, typing }) => {
       if (username !== currentUsername) setIsTyping(typing);
     };
-    const onRead = ({ conversationId: readConversationId }) => {
-      if (readConversationId !== conversationId) return;
-      setMessages(prev => prev.map(m => ({ ...m, read: true })));
+    const onRead = ({ conversationId: readConversationId, readerId }) => {
+      if (readConversationId !== conversationId || !readerId) return;
+      setMessages(prev => prev.map(m =>
+        String(m.senderId) !== String(readerId) ? { ...m, read: true } : m
+      ));
     };
 
     const onDisconnect = () => setIsTyping(false);
@@ -79,6 +86,7 @@ export default function DMChat({ currentUser, otherUser, token, socket, onClose 
     socket.on('disconnect', onDisconnect);
 
     return () => {
+      controller.abort();
       socket.off('dm:message', onMessage);
       socket.off('dm:typing', onTyping);
       socket.off('dm:read', onRead);
@@ -202,7 +210,7 @@ export default function DMChat({ currentUser, otherUser, token, socket, onClose 
                   </span>
                 )}
                 <div className={`dm-msg-bubble ${isMe ? 'bubble-mine' : 'bubble-theirs'}`}>
-                  {msg.text}
+                  <MarkdownMessage content={msg.text} />
                 </div>
                 <div className="dm-msg-meta">
                   <span className="dm-msg-time">{formatTime(msg.timestamp)}</span>
@@ -246,7 +254,7 @@ export default function DMChat({ currentUser, otherUser, token, socket, onClose 
           ref={inputRef}
           value={text}
           onChange={handleChange}
-          placeholder={`Message ${otherUser.username}…`}
+          placeholder={`Message ${otherUser.username} (Markdown supported)...`}
         />
         <button type="submit" disabled={!text.trim()}>➤</button>
       </form>

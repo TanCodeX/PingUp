@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react';
 import { getApiUrl } from '../api';
+import AdminChannelsTab from './AdminChannelsTab';
+import AdminUsersTab from './AdminUsersTab';
+import AdminRolesTab from './AdminRolesTab';
 
 export default function AdminPanel({ currentUser, socket, categories, token, onClose, allowUserChannelCreation }) {
   const [tab,         setTab]         = useState('channels'); // 'channels' | 'users' | 'roles'
@@ -130,220 +133,36 @@ export default function AdminPanel({ currentUser, socket, categories, token, onC
 
           {/* ── Channels tab ───────────────────────────────────── */}
           {tab === 'channels' && (
-            <div className="admin-section">
-              <p className="admin-hint">
-                Manage all channels — toggle permissions, rename, or delete.
-              </p>
-
-              {(categories || []).map(cat => (
-                <div key={cat.id} className="admin-cat-block">
-                  <div className="admin-cat-name">
-                    <span>📁 {cat.name}</span>
-                    <button
-                      className="admin-btn-sm admin-btn-danger"
-                      onClick={() => {
-                        if (!confirm(`Delete category "${cat.name}" and all its channels?`)) return;
-                        socket?.emit('category:delete', { categoryId: cat.id });
-                        notify(`Deleted category "${cat.name}"`);
-                      }}
-                    >Delete Category</button>
-                  </div>
-
-                  <table className="admin-table">
-                    <thead>
-                      <tr>
-                        <th>Channel</th>
-                        <th>Read-only</th>
-                        <th>Locked</th>
-                        <th>Private</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {cat.channels.map(ch => (
-                        <tr key={ch.id}>
-                          <td className="admin-ch-name">
-                            {ch.emoji} #{ch.name}
-                            <span className="admin-ch-desc">{ch.description}</span>
-                          </td>
-                          <td>
-                            <button
-                              className={`admin-toggle ${ch.isReadOnly ? 'on' : 'off'}`}
-                              onClick={() => handleToggleReadOnly(ch)}
-                              title="Toggle read-only"
-                            >
-                              {ch.isReadOnly ? '🔇 ON' : '✍️ OFF'}
-                            </button>
-                          </td>
-                          <td>
-                            <button
-                              className={`admin-toggle ${ch.isLocked ? 'on' : 'off'}`}
-                              onClick={() => handleToggleLock(ch)}
-                              title="Toggle locked"
-                            >
-                              {ch.isLocked ? '🔒 ON' : '🔓 OFF'}
-                            </button>
-                          </td>
-                          <td>
-                            <button
-                              className={`admin-toggle ${ch.isPrivate ? 'on' : 'off'}`}
-                              onClick={() => handleTogglePrivate(ch)}
-                              title="Toggle private"
-                            >
-                              {ch.isPrivate ? '👁️ ON' : '🌐 OFF'}
-                            </button>
-                          </td>
-                          <td className="admin-actions-cell">
-                            <button
-                              className="admin-btn-sm"
-                              onClick={() => handleRenameChannel(ch)}
-                            >✏️ Rename</button>
-                            <button
-                              className="admin-btn-sm admin-btn-danger"
-                              onClick={() => handleDeleteChannel(ch)}
-                            >🗑️ Delete</button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ))}
-
-              {/* Create new channel form */}
-              <CreateChannelForm categories={categories} socket={socket} onNotify={notify} />
-            </div>
+            <AdminChannelsTab
+              categories={categories}
+              socket={socket}
+              notify={notify}
+              handleToggleReadOnly={handleToggleReadOnly}
+              handleToggleLock={handleToggleLock}
+              handleTogglePrivate={handleTogglePrivate}
+              handleRenameChannel={handleRenameChannel}
+              handleDeleteChannel={handleDeleteChannel}
+            />
           )}
 
           {/* ── Users tab ───────────────────────────────────────── */}
           {tab === 'users' && (
-            <div className="admin-section">
-              <p className="admin-hint">
-                View all users, their roles and online status.
-              </p>
-              {loadingUsers ? (
-                <div className="admin-loading">Loading users…</div>
-              ) : (
-                <table className="admin-table">
-                  <thead>
-                    <tr>
-                      <th>User</th>
-                      <th>Role</th>
-                      <th>Status</th>
-                      <th>Logins</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {allUsers.map(u => (
-                      <tr key={u.id} className={u.banned ? 'admin-row-banned' : ''}>
-                        <td className="admin-user-cell">
-                          <div className={`admin-user-avatar avatar-${u.role}`}>
-                            {u.username[0].toUpperCase()}
-                          </div>
-                          <div>
-                            <div className="admin-user-name">{u.username}</div>
-                            {u.displayName !== u.username && (
-                              <div className="admin-user-display">{u.displayName}</div>
-                            )}
-                          </div>
-                        </td>
-                        <td>
-                          <span className={`role-badge-sm role-${u.role}`}>{u.role}</span>
-                        </td>
-                        <td>
-                          <span className={`admin-status ${u.online ? 'online' : 'offline'}`}>
-                            {u.online ? '🟢 Online' : '⚫ Offline'}
-                          </span>
-                        </td>
-                        <td className="admin-center">{u.loginCount || 0}</td>
-                        <td className="admin-actions-cell">
-                          {u.id !== currentUser.id && u.role !== 'owner' && (
-                            <>
-                              <button
-                                className="admin-btn-sm"
-                                disabled={u.banned}
-                                onClick={() => handleKick(u.id, u.username)}
-                              >👢 Kick</button>
-                              <button
-                                className="admin-btn-sm admin-btn-danger"
-                                disabled={u.banned}
-                                onClick={() => handleBan(u.id, u.username)}
-                              >{u.banned ? '🔨 Banned' : '🔨 Ban'}</button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            <AdminUsersTab
+              loadingUsers={loadingUsers}
+              allUsers={allUsers}
+              currentUser={currentUser}
+              handleKick={handleKick}
+              handleBan={handleBan}
+            />
           )}
 
           {/* ── Roles tab ───────────────────────────────────────── */}
           {tab === 'roles' && (
-            <div className="admin-section">
-              <p className="admin-hint">
-                Assign roles to users. Members can only read. Moderators can delete and pin messages.
-              </p>
-
-              <div className="admin-role-legend">
-                <div className="role-legend-item">
-                  <span className="role-badge-sm role-owner">👑 Owner</span>
-                  <span>Full control — channel management, banning, all permissions</span>
-                </div>
-                <div className="role-legend-item">
-                  <span className="role-badge-sm role-moderator">🛡️ Moderator</span>
-                  <span>Delete & pin messages, kick members</span>
-                </div>
-                <div className="role-legend-item">
-                  <span className="role-badge-sm role-member">👤 Member</span>
-                  <span>Send messages in unlocked, non-read-only channels</span>
-                </div>
-              </div>
-
-              {loadingUsers ? (
-                <div className="admin-loading">Loading users…</div>
-              ) : (
-                <table className="admin-table">
-                  <thead>
-                    <tr>
-                      <th>User</th>
-                      <th>Current Role</th>
-                      <th>Assign Role</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {allUsers.filter(u => u.role !== 'owner').map(u => (
-                      <tr key={u.id}>
-                        <td className="admin-user-cell">
-                          <div className={`admin-user-avatar avatar-${u.role}`}>
-                            {u.username[0].toUpperCase()}
-                          </div>
-                          <span>{u.username}</span>
-                        </td>
-                        <td>
-                          <span className={`role-badge-sm role-${u.role}`}>{u.role}</span>
-                        </td>
-                        <td className="admin-role-btns">
-                          <button
-                            className={`admin-role-btn ${u.role === 'moderator' ? 'active' : ''}`}
-                            onClick={() => handleSetRole(u.id, 'moderator')}
-                            disabled={u.role === 'moderator'}
-                          >🛡️ Moderator</button>
-                          <button
-                            className={`admin-role-btn ${u.role === 'member' ? 'active' : ''}`}
-                            onClick={() => handleSetRole(u.id, 'member')}
-                            disabled={u.role === 'member'}
-                          >👤 Member</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            <AdminRolesTab
+              loadingUsers={loadingUsers}
+              allUsers={allUsers}
+              handleSetRole={handleSetRole}
+            />
           )}
 
           {/* ── Settings tab ──────────────────────────────────────── */}
@@ -382,70 +201,6 @@ export default function AdminPanel({ currentUser, socket, categories, token, onC
         
         </div>
       </div>
-    </div>
-  );
-}
-
-// ── Create Channel Form (inside admin panel) ─────────────────────
-function CreateChannelForm({ categories, socket, onNotify }) {
-  const [form, setForm] = useState({
-    categoryId: '',
-    name: '', description: '', emoji: '💬',
-    isReadOnly: false, isPrivate: false,
-  });
-  const EMOJIS = ['💬','🌿','⚙️','📢','🎲','💡','📋','🔒','🌐','🎯','🧪','📌'];
-
-  function handleSubmit(e) {
-    e.preventDefault();
-    if (!form.name.trim() || !form.categoryId) return;
-    socket?.emit('channel:create', {
-      categoryId:  form.categoryId,
-      name:        form.name.trim(),
-      description: form.description.trim(),
-      emoji:       form.emoji,
-    });
-    onNotify(`Created #${form.name}`);
-    setForm({ categoryId: form.categoryId, name: '', description: '', emoji: '💬', isReadOnly: false, isPrivate: false });
-  }
-
-  return (
-    <div className="admin-create-form">
-      <h4 className="admin-create-title">➕ Create New Channel</h4>
-      <form onSubmit={handleSubmit}>
-        <div className="admin-form-row">
-          <select
-            value={form.categoryId}
-            onChange={e => setForm(f => ({ ...f, categoryId: e.target.value }))}
-            required
-          >
-            <option value="">Select category…</option>
-            {(categories || []).map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-          <input
-            placeholder="channel-name"
-            value={form.name}
-            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-            required
-          />
-          <input
-            placeholder="Description (optional)"
-            value={form.description}
-            onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-          />
-        </div>
-        <div className="admin-emoji-row">
-          {EMOJIS.map(em => (
-            <button
-              key={em} type="button"
-              className={`admin-emoji-btn ${form.emoji === em ? 'selected' : ''}`}
-              onClick={() => setForm(f => ({ ...f, emoji: em }))}
-            >{em}</button>
-          ))}
-        </div>
-        <button type="submit" className="admin-submit-btn">Create Channel</button>
-      </form>
     </div>
   );
 }
