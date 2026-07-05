@@ -2,7 +2,7 @@ self.addEventListener('notificationclick', function(event) {
   event.notification.close();
 
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(windowClients) {
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(windowClients) {
       // Focus the first available window
       let matchingClient = windowClients.length > 0 ? windowClients[0] : null;
 
@@ -15,7 +15,7 @@ self.addEventListener('notificationclick', function(event) {
         });
       } else {
         // If no window is open, open a new one (less common if they just minimized)
-        clients.openWindow('/');
+        self.clients.openWindow('/');
       }
     })
   );
