@@ -193,7 +193,7 @@ const [threadReplies, setThreadReplies] = useState([]);
       setThreadReplies(prev =>
         prev.map(m => m.id === id ? { ...m, text, editedAt, hasEditHistory } : m)
       );
-      if (username) {
+      if (username && username !== currentUser.username) {
         setNotifications(prev => [...prev, `✏️ @${username} edited their message`]);
       }
     });
