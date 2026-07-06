@@ -628,12 +628,24 @@ function setupHandlers(io, socket) {
             }
 
             io.to(`dm:${convId}`).emit('dm:message', payload);
-            if (receiverViewingChat) {
-                io.to(`dm:${convId}`).emit('dm:read', {
-                    conversationId: convId,
-                    readerId: String(toUserId),
-                });
+            
+            const otherSocket = [...io.sockets.sockets.values()].find(s => s.user?.id === toUserId);
+            if (otherSocket) {
+                const receiverViewingChat = otherSocket.currentDM === convId;
+                if (receiverViewingChat) {
+                    msg.read = true;
+                    await msg.save();
+                    payload.read = true;
+                    socket.emit('dm:read', { conversationId: convId, readerId: String(toUserId) });
+                } else {
+                    otherSocket.emit('dm:notification', {
+                        fromId: socket.user.id,
+                        from: socket.user.username,
+                        preview: text
+                    });
+                }
             }
+
             if (typeof callback === 'function') callback({ status: 'success', id: msg._id.toString() });
         } catch (err) {
             if (typeof callback === 'function') callback({ error: 'Server error', status: 'failed' });
